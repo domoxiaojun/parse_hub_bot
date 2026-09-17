@@ -627,7 +627,7 @@ def test_delivery_failure_is_logged_without_secrets(caplog):
     async def run():
         client = SimpleNamespace(
             send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21)]),
-            send_live_photo=AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'id'")),
+            send_live_photo=AsyncMock(side_effect=OSError("secret transport detail")),
         )
         live = {'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
                 'width': 1080, 'height': 1440, 'durationSeconds': 3}
@@ -635,13 +635,47 @@ def test_delivery_failure_is_logged_without_secrets(caplog):
         store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
         with caplog.at_level("WARNING", logger="parsehub.worker"):
             await TelegramSender(client).deliver(state, target(), store, lambda: None)
-        # A non-RPC failure is ambiguous: no fallback, status unknown, but it is logged.
+        # A transport failure is ambiguous: no fallback, status unknown, but it is logged.
         assert state['delivery']['status'] == 'unknown'
         assert client.send_rich_message.call_count == 1
         failed = [r.message for r in caplog.records if 'event=delivery.failed' in r.message]
-        assert failed and 'kind=live_photo' in failed[0] and 'error_type=AttributeError' in failed[0]
-        assert 'secret.example' not in ''.join(r.getMessage() for r in caplog.records)
-        assert 'NoneType' not in ''.join(r.getMessage() for r in caplog.records)
+        assert failed and 'kind=live_photo' in failed[0] and 'error_type=OSError' in failed[0]
+        joined = ''.join(r.getMessage() for r in caplog.records)
+        assert 'secret' not in joined
+    asyncio.run(run())
+
+
+def test_kurigram_unbound_file_defect_degrades_live_photo():
+    async def run():
+        client = SimpleNamespace(
+            send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21), SimpleNamespace(id=22),
+                                                     SimpleNamespace(id=23)]),
+            send_live_photo=AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'id'")),
+        )
+        live = {'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
+                'width': 1080, 'height': 1440, 'durationSeconds': 3}
+        state = job([result(media=[live], content='正文')])
+        store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
+        await TelegramSender(client).deliver(state, target(), store, lambda: None)
+        assert state['delivery']['status'] == 'sent'
+        fallback = client.send_rich_message.call_args_list[1].kwargs['rich_message']
+        assert fallback.blocks[1].video.duration == 3
+    asyncio.run(run())
+
+
+def test_floodwait_on_live_photo_is_not_treated_as_rejection():
+    async def run():
+        client = SimpleNamespace(
+            send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21)]),
+            send_live_photo=AsyncMock(side_effect=FloodWait(120)),
+        )
+        live = {'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
+                'width': 1080, 'height': 1440, 'durationSeconds': 3}
+        state = job([result(media=[live], content='正文')])
+        store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
+        await TelegramSender(client).deliver(state, target(), store, lambda: None)
+        assert state['delivery']['status'] == 'partial'
+        assert client.send_rich_message.call_count == 1
     asyncio.run(run())
 
 

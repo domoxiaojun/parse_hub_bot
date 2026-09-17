@@ -462,9 +462,10 @@ class MediaProcessingUnit:
             self.logger(f"分割 part {part}: offset={cur}s, duration={new_dur}s, file={out_file}")
             if new_dur <= 0:
                 break
-            cur += new_dur
-            if cur < total_duration:
-                cur = max(cur - int(keep_sec), 0)
+            # Always advance past the overlap; otherwise a segment shorter than keep_sec
+            # (size limit hit within a second) would re-encode the same offset forever.
+            advance = max(new_dur - int(keep_sec), 1) if cur + new_dur < total_duration else new_dur
+            cur += advance
             part += 1
 
         self.logger(f"视频分割完成: {len(output_paths)} 段")

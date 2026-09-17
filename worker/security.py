@@ -1,7 +1,12 @@
 """Worker input and stable error boundaries."""
 
 import ipaddress
+import re
 from urllib.parse import urlsplit
+
+# Decimal, octal and hex forms ("127.1", "0x7f000001", "2130706433") resolve to
+# addresses that ipaddress.ip_address() cannot parse; never treat them as hostnames.
+_NUMERIC_HOST = re.compile(r"^(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*$")
 
 
 class EngineError(Exception):
@@ -30,5 +35,6 @@ def validate_url(url: str) -> str:
         if not ipaddress.ip_address(host).is_global:
             raise EngineError('unsupported_url', 'identify')
     except ValueError:
-        pass
+        if _NUMERIC_HOST.match(host):
+            raise EngineError('unsupported_url', 'identify') from None
     return host

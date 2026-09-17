@@ -35,12 +35,12 @@ class JobInput(InputModel):
 
 
 class ProxyDefaults(InputModel):
-    parser_proxies: list[str] = Field(default_factory=list, max_length=32)
-    downloader_proxies: list[str] = Field(default_factory=list, max_length=32)
+    parser_proxies: list[str] = Field(default_factory=list, max_length=256)
+    downloader_proxies: list[str] = Field(default_factory=list, max_length=256)
 
 
 class PlatformConfig(ProxyDefaults):
-    cookies: list[str] = Field(default_factory=list, max_length=32)
+    cookies: list[str] = Field(default_factory=list, max_length=256)
 
 
 class ConfigInput(InputModel):

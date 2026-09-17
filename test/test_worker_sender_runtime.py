@@ -166,3 +166,18 @@ def test_sender_session_storage_survives_recreation_without_touching_original_se
         finally:
             await second.storage.close()
     asyncio.run(run())
+
+
+def test_corrupt_cooldown_file_does_not_park_sender_in_error(tmp_path, caplog):
+    async def run():
+        path = tmp_path / "worker_sender_123.cooldown.json"
+        path.write_text('{"retryAt": 17')  # torn write
+        fake = client()
+        runtime = SenderRuntime(fake, "123", path)
+        with caplog.at_level("WARNING", logger="parsehub.worker"):
+            runtime.start()
+            await until(lambda: runtime.state == "ready")
+        assert fake.start.call_count == 1
+        assert any("event=sender.cooldown_unreadable" in r.message for r in caplog.records)
+        await runtime.close()
+    asyncio.run(run())

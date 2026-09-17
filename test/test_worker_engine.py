@@ -307,3 +307,17 @@ def test_engine_has_no_custom_media_or_upload_dependency() -> None:
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
     assert "worker.media" not in imports and "worker.upload" not in imports
+
+
+def test_numeric_loopback_spellings_are_rejected() -> None:
+    for host in ("127.1", "0x7f000001", "2130706433", "0", "0177.0.0.1"):
+        with pytest.raises(EngineError, match="unsupported_url"):
+            validate_url(f"http://{host}/x")
+    assert validate_url("https://example.com/x") == "example.com"
+
+
+def test_download_timeout_maps_to_retryable_code(tmp_path: Path) -> None:
+    from worker.engine import ParseHubEngine, _UpstreamFailure
+    assert ParseHubEngine._failure_code(_UpstreamFailure(None, "timeout"), False) == "upstream_timeout"
+    chain = [Exception("x"), TimeoutError()]
+    assert ParseHubEngine._failure_reason(chain, None) == "timeout"

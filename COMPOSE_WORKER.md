@@ -78,3 +78,29 @@ gptbot不再推送本地平台配置覆盖它。没有旧缓存或数据库迁�
 
 Worker运行原`ParsePipeline`：例如downloads/作品标题/作品标题.mp4，图集沿用001_作品标题.jpg等原命名；重名目录由原库生成作品标题_2。下载重试、processed目录及_remux、_h264、_split规则均由原流水线决定，Worker只把结果适配为消息；归档使用原同名.tar.gz规则。缓存通过数据库登记目录与归档路径管理，不按worker-前缀扫描删除；没有登记的原下载不会被清理。
 
+## 维护与清理缓存
+
+内置维护脚本只清理数据库登记的落盘文件，不会误删非 Worker 历史文件。脚本会申请与 Worker 进程相同的数据目录锁：Worker 运行时执行会直接拒绝并退出码 1，因此需要先停止服务，用一次性容器运行脚本，再启动：
+
+```sh
+docker compose -f compose.worker.yaml stop parsehub-worker
+
+# 查看当前缓存占用与条目统计
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --stats
+
+# 演练预览（仅查看将清理的记录与容量，不实际执行删除）
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --dry-run
+
+# 快速全量清理（默认跳过未到期的活跃租约）
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache
+
+# 强制全量清理（连同未到期租约一并清空）
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --force
+
+# 仅清理指定链接的缓存（按当前 BOT_TOKEN 对应的任务键匹配，也接受别名）
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --url "https://..."
+
+docker compose -f compose.worker.yaml start parsehub-worker
+```
+
+全量清理不会删除任务表：已持久化的交付回执用于幂等重查，由 Worker 自身按 48 小时过期。

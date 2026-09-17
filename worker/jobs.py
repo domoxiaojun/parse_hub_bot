@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from worker.models import ConfigInput, JobInput
+from worker.security import EngineError
 from worker.store import Store
 
 logger = logging.getLogger("parsehub.worker")
@@ -105,7 +106,7 @@ class Jobs:
                     use_persistent_cache=request.delivery is not None,
                 )
             if result.get("access") != "public":
-                raise ValueError("content_restricted")
+                raise EngineError("content_restricted", "prepare")
             # Never keep a partial conversion as the canonical cache result. A retry may
             # recover after a codec/runtime update, as with HEIC support in Worker.
             reusable = result.get("mediaFailureCount", 0) == 0
@@ -167,8 +168,9 @@ class Jobs:
                     code = getattr(error, "code", None)
                     if code not in {"unsupported_url", "upstream_challenge", "credentials_required",
                                     "credentials_invalid", "content_unavailable", "upstream_contract",
-                                    "upstream_http", "content_restricted", "media_failed", "visibility_unknown",
-                                    "media_processing_failed", "upload_failed", "file_too_large"}:
+                                    "upstream_http", "upstream_timeout", "content_restricted", "media_failed",
+                                    "visibility_unknown", "media_processing_failed", "upload_failed",
+                                    "file_too_large", "unsupported_mode"}:
                         code = "prepare_failed"
                     job["results"].append({"sourceUrl": url, "error": {"code": code, "message": "解析准备失败"}})
                     logger.warning("event=prepare.failed job=%s code=%s", job["id"], code)
@@ -222,7 +224,7 @@ class Jobs:
                     self.store.renew(item["leaseId"])
             await asyncio.sleep(interval)
 
-    async def cancel(self, job_id: str) -> None:
+    async def cancel(self, job_id: str) -> bool:
         task = self.tasks.get(job_id)
         if task:
             task.cancel()
@@ -230,12 +232,14 @@ class Jobs:
         job = self.store.job(job_id)
         if job:
             if job.get("delivery") is not None and job["status"] not in {"queued", "running"}:
-                return
+                return True
             for item in job["results"]:
                 if item.get("leaseId"):
                     self.store.release(item["leaseId"])
             job.update(status="cancelled", stage="cancelled")
             self.store.save_job(job)
+            return True
+        return False
 
     async def close(self) -> None:
         for task in list(self.tasks.values()):

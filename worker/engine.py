@@ -404,6 +404,8 @@ class ParseHubEngine:
             return "credentials_invalid" if credential_used else "credentials_required"
         if failure.reason in {"content_not_found", "content_missing", "response_data_missing"}:
             return "content_unavailable"
+        if failure.reason == "timeout":
+            return "upstream_timeout"
         return "upstream_http" if failure.http_status else "upstream_contract"
 
     @staticmethod

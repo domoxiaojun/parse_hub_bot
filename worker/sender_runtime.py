@@ -40,8 +40,14 @@ class SenderRuntime:
             value = json.loads(self.cooldown_path.read_text())["retryAt"]
         except FileNotFoundError:
             return 0.0
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            # A torn write must not park the sender in a permanent error state;
+            # Telegram still enforces any real flood wait on the next attempt.
+            logger.warning("event=sender.cooldown_unreadable error_type=%s", type(error).__name__)
+            return 0.0
         if not isinstance(value, int | float) or not math.isfinite(value):
-            raise ValueError("invalid sender cooldown")
+            logger.warning("event=sender.cooldown_unreadable error_type=ValueError")
+            return 0.0
         return float(value)
 
     def _save_cooldown(self) -> None:

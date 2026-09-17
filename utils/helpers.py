@@ -65,6 +65,22 @@ def with_request_id[T](func: Callable[..., Awaitable[T]]) -> Callable[..., Await
     return wrapper
 
 
+def mask_proxy(value: str | None) -> str | None:
+    """Hide proxy credentials in logs; keep scheme, host and port."""
+    if not value:
+        return value
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value)
+    if not (parts.username or parts.password):
+        return value
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://***@{host}{port}"
+
+
 def mask_secret(value: str) -> str:
     if not value:
         return ""

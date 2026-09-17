@@ -78,3 +78,15 @@ def test_default_edits_and_invalid_keeps_are_atomic(tmp_path: Path) -> None:
         config.update({'baseSha256': config.snapshot()['sha256'], 'platform': 'youtube',
                        'cookies': [{'value': 'a=b\nInjected: yes'}]})
     assert path.read_bytes() == content
+
+
+def test_original_yaml_forms_accepted_like_the_interactive_bot(tmp_path: Path) -> None:
+    path = tmp_path / 'platform_config.yaml'
+    path.write_text('''default_parser_proxies: socks5h://127.0.0.1:1080
+platforms:
+''')
+    active = PlatformConfigFile(path, PLATFORMS).active_config()
+    assert active.defaults.parser_proxies == ['socks5h://127.0.0.1:1080']
+    assert active.platforms['youtube'].cookies == []
+    path.write_text('platforms:\n  youtube:\n    cookies:\n' + ''.join(f"      - 'k={i}'\n" for i in range(40)))
+    assert len(PlatformConfigFile(path, PLATFORMS).active_config().platforms['youtube'].cookies) == 40

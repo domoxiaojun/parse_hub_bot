@@ -6,7 +6,7 @@ from pydantic import AnyUrl, BaseModel, ConfigDict, SecretStr, field_serializer
 from yaml import safe_load
 
 from log import logger
-from utils.helpers import mask_secret
+from utils.helpers import mask_proxy, mask_secret
 
 from .config import bs
 
@@ -57,6 +57,22 @@ class PlatformsConfig(BaseModel):
     default_downloader_proxies: list[AnyUrl] | None = None
     platforms: dict[str, Platform] = {}
 
+    def masked_dump(self) -> str:
+        """JSON for logs: cookies are already masked, proxy credentials are stripped here."""
+        import json
+
+        data = self.model_dump(mode="json")
+
+        def mask(values: list[str] | None) -> list[str] | None:
+            return None if values is None else [mask_proxy(v) or v for v in values]
+
+        data["default_parser_proxies"] = mask(data.get("default_parser_proxies"))
+        data["default_downloader_proxies"] = mask(data.get("default_downloader_proxies"))
+        for platform in data.get("platforms", {}).values():
+            platform["parser_proxies"] = mask(platform.get("parser_proxies"))
+            platform["downloader_proxies"] = mask(platform.get("downloader_proxies"))
+        return json.dumps(data, indent=4, ensure_ascii=False)
+
     @classmethod
     def load_config(cls, file: Path) -> "PlatformsConfig":
         if not file.exists():
@@ -92,7 +108,7 @@ class PlatformsConfig(BaseModel):
             default_downloader_proxies=cls._2l(data.get("default_downloader_proxies", None)),
             platforms=platforms,
         )
-        logger.debug(f"已载入平台配置: {pc.model_dump_json(indent=4)}")
+        logger.debug(f"已载入平台配置: {pc.masked_dump()}")
         return pc
 
     @staticmethod

@@ -39,6 +39,7 @@ class LivePhotoFrame:
     width: int
     height: int
     result_indices: list[int]
+    duration: int = 0
     text: str = ""
     media_count: int = 1
     completed_result_indices: list[int] = field(default_factory=list)
@@ -55,7 +56,7 @@ def live_photo_fallback_frame(frame: LivePhotoFrame) -> RichFrame:
         types.InputRichBlockVideo(
             types.InputMediaVideo(
                 frame.video, file_name=video_name, supports_streaming=True,
-                width=frame.width, height=frame.height,
+                width=frame.width, height=frame.height, duration=frame.duration,
             ),
             caption=types.RichBlockCaption(text=literal("实况视频")),
         ),
@@ -72,6 +73,7 @@ class _LivePhotoUnit:
     video: Path | str
     width: int
     height: int
+    duration: int = 0
 
 
 def literal(value: str | list[Any]) -> types.RichText:
@@ -276,6 +278,7 @@ def media_units(
                     video=video,
                     width=integer(media.get("width")),
                     height=integer(media.get("height")),
+                    duration=integer(media.get("durationSeconds"), duration=True),
                 ))
             continue
         file_id = media.get("mediaId")
@@ -397,7 +400,7 @@ def build_frames(
                     pending, count = [], 0
                 item_frames.append(LivePhotoFrame(
                     photo=unit.photo, video=unit.video, width=unit.width, height=unit.height,
-                    result_indices=[index],
+                    result_indices=[index], duration=unit.duration,
                 ))
                 continue
             group_blocks, group_media = unit

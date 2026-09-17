@@ -12,7 +12,7 @@ from db import get_session
 from log import logger
 from plugins.context import get_config_target
 from plugins.helpers import format_label
-from plugins.parse.sender import MessageSender
+from plugins.parse.sender import MessageSender, SendFailed
 from repo.settings import SettingsConfig
 from services import SettingsService, StatusReporter
 
@@ -89,6 +89,13 @@ class MessageStatusReporter(StatusReporter):
             pass
         except Forbidden as e:
             logger.warning(f"状态消息发送失败, Bot 无权限: {e}")
+            if self._on_forbidden:
+                await self._on_forbidden(self._user_msg, self._config)
+        except SendFailed as e:
+            # MessageSender wraps the original error; a wrapped Forbidden still means no permission.
+            if not isinstance(e.__cause__, Forbidden):
+                raise
+            logger.warning(f"状态消息发送失败, Bot 无权限: {e.__cause__}")
             if self._on_forbidden:
                 await self._on_forbidden(self._user_msg, self._config)
 

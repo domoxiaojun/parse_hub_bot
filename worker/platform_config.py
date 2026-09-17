@@ -22,14 +22,14 @@ def string_list(value: Any) -> list[str]:
     if value is None:
         return []
     values = value if isinstance(value, list) else [value]
-    if len(values) > 32 or any(not isinstance(item, str) for item in values):
+    if len(values) > 256 or any(not isinstance(item, str) for item in values):
         raise ValueError('invalid_platform_config')
     return list(dict.fromkeys(item for item in values if item))
 
 
 def proxy_url(value: str) -> str:
     parsed = urlsplit(value)
-    if parsed.scheme not in ('http', 'https', 'socks5') or not parsed.hostname:
+    if parsed.scheme not in ('http', 'https', 'socks5', 'socks5h') or not parsed.hostname:
         raise ValueError('invalid_proxy')
     if parsed.path not in ('', '/') or parsed.query or parsed.fragment:
         raise ValueError('invalid_proxy')
@@ -108,7 +108,7 @@ class PlatformConfigFile:
             raw = yaml.safe_load(content) or {}
         except yaml.YAMLError as exc:
             raise ValueError('invalid_platform_config') from exc
-        if not isinstance(raw, dict) or not isinstance(raw.get('platforms', {}), dict):
+        if not isinstance(raw, dict) or not isinstance(raw.get('platforms') or {}, dict):
             raise ValueError('invalid_platform_config')
         return self._version(content), raw
 
@@ -117,7 +117,7 @@ class PlatformConfigFile:
                     for stage in ('parser', 'downloader')}
         platforms = {}
         for platform in self.platforms:
-            entry = raw.get('platforms', {}).get(platform['id']) or {}
+            entry = (raw.get('platforms') or {}).get(platform['id']) or {}
             if not isinstance(entry, dict):
                 raise ValueError('invalid_platform_config')
             resolved: dict[str, Any] = {'cookies': string_list(entry.get('cookies'))}

@@ -7,6 +7,7 @@ from parsehub.types import (
 
 from core import pl_cfg
 from log import logger
+from utils.helpers import mask_proxy
 
 logger = logger.bind(name="ParseService")
 
@@ -20,7 +21,9 @@ class ParseService:
         return cls._instance
 
     def __init__(self) -> None:
-        self.parser = ParseHub()
+        # __new__ returns the shared instance; do not rebuild every platform parser per call.
+        if not hasattr(self, "parser"):
+            self.parser = ParseHub()
 
     def get_platform(self, url: str) -> Platform:
         p = self.parser.get_platform(url)
@@ -37,7 +40,7 @@ class ParseService:
             try:
                 cookie = pl_cfg.roll_cookie(p.id)
                 proxy = pl_cfg.roll_parser_proxy(p.id)
-                logger.debug(f"使用配置: proxy={proxy}, cookie={cookie}, attempt={attempt}/{max_retries}")
+                logger.debug(f"使用配置: proxy={mask_proxy(proxy)}, cookie={cookie}, attempt={attempt}/{max_retries}")
                 pr = await self.parser.parse(url, cookie=cookie.get_secret_value() if cookie else None, proxy=proxy)
                 logger.debug(f"解析完成: {pr}")
                 return pr
@@ -54,7 +57,7 @@ class ParseService:
         for attempt in range(1, max_retries + 1):
             try:
                 proxy = pl_cfg.roll_parser_proxy(p.id)
-                logger.debug(f"使用配置: proxy={proxy}, attempt={attempt}/{max_retries}")
+                logger.debug(f"使用配置: proxy={mask_proxy(proxy)}, attempt={attempt}/{max_retries}")
                 raw_url = await self.parser.get_raw_url(url, proxy=proxy, clean_all=clean_all)
                 logger.debug(f"原始 URL: {raw_url}")
                 return str(raw_url)

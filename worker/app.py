@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import cast
 
@@ -12,6 +13,12 @@ from pydantic import ValidationError
 from worker.jobs import Jobs
 from worker.models import JobInput
 from worker.platform_config import ConfigConflict, PlatformConfigFile
+
+logger = logging.getLogger("parsehub.worker")
+
+
+class InvalidRequest(ValueError):
+    """Malformed input that is not a pydantic model error."""
 
 
 def public_job(job: dict) -> dict:
@@ -26,12 +33,12 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
     async def authenticated(
         request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
     ) -> web.StreamResponse:
-        supplied = request.headers.get("Authorization", "")
-        if not hmac.compare_digest(supplied, f"Bearer {service_key}"):
+        supplied = request.headers.get("Authorization", "").encode("utf-8", errors="replace")
+        if not hmac.compare_digest(supplied, f"Bearer {service_key}".encode()):
             return web.json_response({"error": {"code": "unauthorized", "message": "需要服务认证"}}, status=401)
         try:
             return cast(web.StreamResponse, await handler(request))
-        except (ValidationError, json.JSONDecodeError):
+        except (ValidationError, json.JSONDecodeError, InvalidRequest):
             return web.json_response({"error": {"code": "invalid_request", "message": "请求参数无效"}}, status=400)
         except ConfigConflict:
             return web.json_response({"error": {"code": "config_conflict", "message": "配置已更新，请刷新后重试"}},
@@ -45,7 +52,9 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
             return web.json_response({"error": {"code": code, "message": "请求无法执行"}}, status=409)
         except web.HTTPException:
             raise
-        except Exception:
+        except Exception as error:
+            logger.warning("event=http.internal_error method=%s route=%s error_type=%s",
+                           request.method, request.match_info.route.name or request.path, type(error).__name__)
             return web.json_response({"error": {"code": "worker_internal", "message": "服务处理失败"}}, status=500)
 
     app = web.Application(middlewares=[authenticated], client_max_size=1024 * 1024)
@@ -71,7 +80,7 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
             return web.json_response({"error": {"code": "config_unavailable"}}, status=503)
         update = await request.json()
         if not isinstance(update, dict):
-            raise ValueError("invalid_config_update")
+            raise InvalidRequest("invalid_config_update")
         return web.json_response(platform_config.update(update))
 
     async def create_job(request: web.Request) -> web.Response:
@@ -85,7 +94,8 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
         return web.json_response(public_job(job))
 
     async def cancel_job(request: web.Request) -> web.Response:
-        await jobs.cancel(request.match_info["id"])
+        if not await jobs.cancel(request.match_info["id"]):
+            raise web.HTTPNotFound()
         return web.json_response({"ok": True})
 
     async def renew_lease(request: web.Request) -> web.Response:
@@ -109,7 +119,11 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
         })
         # Open before returning control to cleanup/release; an in-flight read
         # owns this descriptor even if the caller releases the cache lease.
-        with path.open('rb') as file:
+        try:
+            file = path.open('rb')
+        except OSError:
+            raise web.HTTPNotFound() from None
+        with file:
             await response.prepare(request)
             while chunk := await asyncio.to_thread(file.read, 256 * 1024):
                 await response.write(chunk)

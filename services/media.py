@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import pillow_heif
 from easy_ai18n import PreLocaleSelector
 from parsehub.types import AnyMediaFile, DownloadResult, ProgressUnit
 from parsehub.utils.media_info import MediaInfoReader
@@ -8,6 +9,9 @@ from parsehub.utils.media_info import MediaInfoReader
 from log import logger
 from utils.helpers import to_list
 from utils.media_processing_unit import MediaProcessingUnit
+
+# Every entry point that converts media needs HEIF support, not only bot.py.
+pillow_heif.register_heif_opener()
 
 
 @dataclass
@@ -50,7 +54,13 @@ async def process_media_files(download_result: DownloadResult) -> list[Processed
     for media_file in media_files:
         # 对于实况图片只处理图片, 不处理视频
         logger.debug(f"处理文件: {media_file.path}")
-        result = await processor.process(media_file.path)
+        try:
+            result = await processor.process(media_file.path)
+        except ValueError as e:
+            # An unrecognised extension must not discard the whole post; pass the file through untouched.
+            logger.warning(f"跳过媒体处理, 原样发送: {type(e).__name__}: {e}")
+            processed_list.append(ProcessedMedia(media_file, None, None))
+            continue
         logger.debug(f"处理结果: output_paths={result.output_paths}")
         processed_list.append(ProcessedMedia(media_file, result.output_paths, result.temp_dir))
     logger.debug(f"媒体处理完成: 处理数={len(processed_list)}")

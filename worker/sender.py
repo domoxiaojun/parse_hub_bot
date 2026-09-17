@@ -86,8 +86,10 @@ class TelegramSender:
                     checkpoint()
                     return
             else:
+                expired = str(error) == "media_expired"
                 receipt.update(status="failed", inFlight=False, error={
-                    "code": "delivery_limits", "message": "解析结果无法在当前消息中交付",
+                    "code": "media_expired" if expired else "delivery_limits",
+                    "message": "媒体缓存已过期，请重新解析" if expired else "解析结果无法在当前消息中交付",
                 })
                 checkpoint()
                 return
@@ -100,8 +102,12 @@ class TelegramSender:
             try:
                 try:
                     response = await self._send_with_retry(target, frame, previous_message_id, receipt, checkpoint)
-                except RPCError as error:
-                    if not (isinstance(frame, LivePhotoFrame) and isinstance(target, MessageDelivery)):
+                except (RPCError, AttributeError) as error:
+                    # Flood control is not a rejection of the live photo itself; re-sending as a
+                    # Rich frame would only be throttled again. AttributeError comes from kurigram's
+                    # unbound `file` in send_live_photo after FilePartMissing: nothing was sent either.
+                    if (not (isinstance(frame, LivePhotoFrame) and isinstance(target, MessageDelivery))
+                            or isinstance(error, FloodWait | SlowmodeWait)):
                         raise
                     # Telegram rejected the native live photo before anything was sent:
                     # deliver the same photo and video as a Rich frame instead of losing the item.
@@ -192,4 +198,4 @@ class TelegramSender:
                 if isinstance(target, MessageDelivery):
                     raise
                 return True
-        raise OSError("retry_exhausted")
+        raise AssertionError("unreachable")

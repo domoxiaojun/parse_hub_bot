@@ -9,11 +9,15 @@ from typing import Any, cast
 
 TTL = 172800
 LEASE_TTL = 300
+# A freshly published, non-reusable result is leased by its waiter only after the
+# shared task returns; keep it out of cleanup for this long.
+PUBLISH_GRACE = 120
 
 
 class Store:
     def __init__(self, root: Path, max_bytes: int = 10 * 1024**3,
-                 database_path: Path | None = None, files_path: Path | None = None) -> None:
+                 database_path: Path | None = None, files_path: Path | None = None,
+                 recover: bool = True) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.files = (files_path or self.root / "files").resolve()
@@ -36,6 +40,16 @@ class Store:
             CREATE TABLE IF NOT EXISTS worker_owned_paths (
               path TEXT PRIMARY KEY, kind TEXT NOT NULL, owner TEXT NOT NULL, cache_id TEXT);
         """)
+        # Older databases predate the publish timestamp; add it in place.
+        if "created" not in {r[1] for r in self.db.execute("PRAGMA table_info(worker_cache)")}:
+            self.db.execute("ALTER TABLE worker_cache ADD COLUMN created REAL")
+            self.db.execute("UPDATE worker_cache SET created=accessed WHERE created IS NULL")
+            self.db.commit()
+        if recover:
+            self.recover()
+
+    def recover(self) -> None:
+        """Mark work left by a dead Worker; only the process that owns the data lock may call this."""
         for row in self.db.execute("SELECT id,payload FROM worker_jobs").fetchall():
             payload = json.loads(row["payload"])
             if payload["status"] in {"queued", "running"}:
@@ -119,7 +133,7 @@ class Store:
                             (json.dumps(payload), time.time(), payload["id"]))
         else:
             self.db.execute("INSERT INTO worker_jobs VALUES (?,?,?,?,?)",
-                            (payload["id"], idem, fingerprint, json.dumps(payload), time.time()))
+                            (payload["id"], idem or None, fingerprint, json.dumps(payload), time.time()))
         self.db.commit()
 
     def job(self, job_id: str) -> dict[str, Any] | None:
@@ -161,9 +175,10 @@ class Store:
             raise ValueError("unregistered cache file")
         size = sum(path.stat().st_size for path in set(files))
         now = time.time()
-        self.db.execute("INSERT INTO worker_cache VALUES (?,?,?,?,?,?,?)",
+        self.db.execute("INSERT INTO worker_cache (id,key,payload,directory,bytes,expires,accessed,created) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
                         (cache_id, key, json.dumps(result), str(directory), size,
-                         now + TTL if reusable else now, now))
+                         now + TTL if reusable else now, now, now))
         if owner is not None:
             self.db.execute("UPDATE worker_owned_paths SET cache_id=? WHERE owner=? AND cache_id IS NULL",
                             (cache_id, owner))
@@ -212,6 +227,8 @@ class Store:
         total = sum(row["bytes"] for row in rows)
         for row in rows:
             if row["expires"] > now and total <= self.max_bytes:
+                continue
+            if (row["created"] or 0) > now - PUBLISH_GRACE:
                 continue
             if self.db.execute("SELECT 1 FROM worker_leases WHERE cache_id=?", (row["id"],)).fetchone():
                 continue

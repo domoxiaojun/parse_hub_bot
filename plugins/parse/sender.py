@@ -44,6 +44,10 @@ type ReplyMediaGroupItem = InputMediaPhoto | InputMediaVideo | InputMediaDocumen
 type PathType = str | os.PathLike[str]
 
 
+class SendFailed(RuntimeError):
+    """Raised after retries; ``__cause__`` carries the last Telegram error."""
+
+
 @dataclass(frozen=True, slots=True)
 class MessageSender:
     cli: Client
@@ -94,12 +98,12 @@ class MessageSender:
                     raise
             except Forbidden as e:
                 logger.warning(f"消息发送失败, Bot 无权限: {e}")
-                break
+                raise SendFailed("消息发送失败") from e
             except Exception as e:
-                logger.warning(f"消息发送失败: {e}")
-                break
+                logger.warning(f"消息发送失败: {type(e).__name__}: {e}")
+                raise SendFailed("消息发送失败") from e
             await asyncio.sleep(0.5)
-        raise RuntimeError("消息发送失败")
+        raise SendFailed("消息发送失败")
 
     async def chat_action(self, action: enums.ChatAction) -> None:
         await self.msg.reply_chat_action(action)

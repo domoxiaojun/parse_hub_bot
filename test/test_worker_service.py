@@ -454,3 +454,77 @@ def test_original_database_tables_and_unrelated_downloads_survive(tmp_path: Path
     assert store.db.execute("SELECT raw_url FROM cache").fetchone()[0] == "original-content"
     assert store.db.execute("SELECT original FROM jobs").fetchone()[0] == "original-job"
     store.close()
+
+
+def test_new_job_rows_do_not_collide_on_empty_idempotency(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    store.save_job({"id": "a", "status": "running", "results": []})
+    store.save_job({"id": "b", "status": "running", "results": []})
+    assert store.job("a") and store.job("b")
+    assert store.idempotent("", "x") is None
+    store.close()
+
+
+def test_fresh_non_reusable_publish_survives_cleanup_until_leased(tmp_path: Path) -> None:
+    from worker.store import PUBLISH_GRACE
+    store = Store(tmp_path)
+    folder = store.files / "Title"
+    store.register_path("fixture", folder, "directory")
+    folder.mkdir()
+    file = folder / "video"
+    file.write_bytes(b"media")
+    with patch("worker.store.time.time", return_value=100):
+        cache_id = store.publish("canonical", {"_files": [str(file)]}, folder, owner="fixture", reusable=False)
+    with patch("worker.store.time.time", return_value=101):
+        store.cleanup()
+        assert file.exists()
+        lease = store.lease(cache_id)
+    with patch("worker.store.time.time", return_value=100 + PUBLISH_GRACE + 1):
+        store.cleanup()
+        assert file.exists()  # leased
+        store.release(lease)
+        store.cleanup()
+        assert not file.exists()
+    store.close()
+
+
+def test_http_error_mapping_is_consistent(tmp_path: Path, caplog) -> None:
+    async def run() -> None:
+        store = Store(tmp_path)
+        jobs = Jobs(FakeEngine(), store, "123")
+        config = PlatformConfigFile(tmp_path / "platform_config.yaml", jobs.engine.capabilities()["platforms"])
+        jobs.configure(config.active_config())
+        async with TestClient(TestServer(create_app(jobs, "secret", config))) as client:
+            assert (await client.get("/api/v1/health", headers={"Authorization": "Bearer sécret"})).status == 401
+            headers = {"Authorization": "Bearer secret"}
+            assert (await client.put("/api/v1/config", json=[1], headers=headers)).status == 400
+            assert (await client.delete("/api/v1/jobs/missing", headers=headers)).status == 404
+            jobs.store.job = lambda _id: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[method-assign]
+            with caplog.at_level("WARNING", logger="parsehub.worker"):
+                assert (await client.get("/api/v1/jobs/x", headers=headers)).status == 500
+            assert any("event=http.internal_error" in r.message and "RuntimeError" in r.message
+                       for r in caplog.records)
+            assert "boom" not in caplog.text
+        store.close()
+    asyncio.run(run())
+
+
+def test_restricted_result_keeps_its_error_code(tmp_path: Path) -> None:
+    async def run() -> None:
+        store = Store(tmp_path)
+        engine = FakeEngine()
+        jobs = Jobs(engine, store, "123")
+        config = PlatformConfigFile(tmp_path / "platform_config.yaml", engine.capabilities()["platforms"])
+        jobs.configure(config.active_config())
+        original = engine.prepare
+
+        async def restricted(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            result = await original(*args, **kwargs)
+            return {**result, "access": "restricted"}
+
+        engine.prepare = restricted  # type: ignore[method-assign]
+        job = jobs.create(request("restricted"))
+        await asyncio.gather(*list(jobs.tasks.values()))
+        assert store.job(job["id"])["results"][0]["error"]["code"] == "content_restricted"
+        store.close()
+    asyncio.run(run())
