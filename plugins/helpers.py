@@ -86,7 +86,12 @@ def build_caption_by_str(
     """构建消息正文：标题 + 内容 + 来源链接"""
     title, content = title or "", content or ""
     if rich:
-        body = f"### {title}\n\n <details><summary>📃</summary>\n\n{content}\n\n</details>"
+        parts = []
+        if title and not hide_title:
+            parts.append(f"**{title}**")
+        if content and not hide_desc:
+            parts.append(content)
+        body = "\n\n".join(parts)
     elif telegraph_url:
         label = (title or content[:15]).replace("\n", " ") or "-"
         body = f"**[{label}]({telegraph_url})**"
@@ -107,11 +112,9 @@ def build_caption_by_str(
 
 
 def format_text(text: str) -> str:
-    """格式化输出内容, 限制长度, 添加折叠块样式"""
+    """保留完整内容并为长正文添加折叠块样式。"""
     text = text.strip()
     if len(text) > 500 or len(text.splitlines()) > 10:
-        if len(text) > 1000:
-            text = text[:900] + "......"
         return f"<blockquote expandable>{text}</blockquote>"
     else:
         return text

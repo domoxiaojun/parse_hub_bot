@@ -13,6 +13,10 @@ class Telegraph:
         self.domain = domain
         self.telegraph = TelegraphAPI(access_token=token, domain=domain)
 
+    async def close(self) -> None:
+        """Release the underlying HTTP client after page publication."""
+        await self.telegraph._telegraph.session.aclose()
+
     async def create_account(
         self, short_name: str, author_name: str | None = None, author_url: str | None = None
     ) -> "TelegraphAccount":

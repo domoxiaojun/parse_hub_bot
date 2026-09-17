@@ -1,0 +1,37 @@
+name: parsehub-worker
+
+services:
+  parsehub-worker:
+    image: parsehub-worker:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "worker"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file:
+      - .env
+    environment:
+      WORKER_HOST: 0.0.0.0
+      WORKER_ALLOW_CONTAINER_BIND: "true"
+      WORKER_PORT: "8080"
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+    ports:
+      - "127.0.0.1:${PARSEHUB_WORKER_HTTP_PORT:-8080}:8080"
+    networks:
+      - parsehub
+    healthcheck:
+      test: ["CMD", "python", "-m", "worker.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+networks:
+  parsehub:
+    name: parsehub-worker-network
+    driver: bridge

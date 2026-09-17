@@ -283,3 +283,7 @@ This project is released under the [MIT License](LICENSE).
 **If this project helps you, please consider giving it a ⭐ Star!**
 
 </div>
+
+## HTTP Worker (no message listener)
+
+For gptbot integration, use the standalone Worker entrypoint with the same Bot Token. It prepares media across every registered ParseHub platform and registers file IDs; gptbot owns Rich Message delivery. See [WORKER.md](WORKER.md) for configuration, API and native process deployment.

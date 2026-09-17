@@ -1,0 +1,20 @@
+[Unit]
+Description=ParseHub media preparation Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=parsehub
+Group=parsehub
+WorkingDirectory=/opt/parse_hub_bot
+EnvironmentFile=/opt/parse_hub_bot/.env
+ExecStart=/usr/local/bin/uv run --frozen python -m worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

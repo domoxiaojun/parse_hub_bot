@@ -284,3 +284,7 @@ uv run pytest
 
 </div>
 
+
+## HTTP Worker（无消息监听）
+
+与 gptbot 集成时使用独立 Worker 入口，复用全部解析平台和媒体准备能力。两进程使用同一个 Bot Token；Worker 注册媒体，gptbot 发送 Rich Message。配置及原生进程部署见 [WORKER.md](WORKER.md)。
