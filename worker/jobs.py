@@ -72,7 +72,10 @@ class Jobs:
 
     @staticmethod
     def key(url: str, request: JobInput) -> str:
-        return hashlib.sha256(f"v6-source-media:{request.accountId}:{request.outputMode}:{url}".encode()).hexdigest()
+        transport = "direct" if request.delivery is not None else "files"
+        return hashlib.sha256(
+            f"v7-original-pipeline:{transport}:{request.accountId}:{request.outputMode}:{url}".encode()
+        ).hexdigest()
 
     async def _prepare(self, url: str, request: JobInput, config: dict[str, Any], key: str,
                        job_id: str) -> tuple[str, dict[str, Any]]:
@@ -97,8 +100,9 @@ class Jobs:
                     url, mode=request.mode, output_mode=request.outputMode,
                     config=config, progress=progress, directory=self.store.files,
                     refresh=request.refresh,
-                    register_directory=lambda path: self.store.register_path(owner, path, "directory"),
+                    register_directory=lambda path: self.store.register_path(owner, path, "directory", existing=True),
                     register_file=lambda path: self.store.register_path(owner, path, "file"),
+                    use_persistent_cache=request.delivery is not None,
                 )
             if result.get("access") != "public":
                 raise ValueError("content_restricted")

@@ -104,6 +104,34 @@ def test_media_mapping_order_metadata_and_archive():
     assert blocks[-2].document.file_name == "media.tar.gz"
 
 
+def test_original_cache_file_ids_send_without_local_media_resolution():
+    cached = result(
+        media=[{
+            "type": "video",
+            "telegramFileId": "cached-video-file-id",
+            "telegramCoverFileId": "cached-cover-file-id",
+        }],
+        content="缓存正文",
+    )
+
+    def reject_local_resolution(*_args):
+        raise AssertionError("original Telegram cache must not resolve a local lease file")
+
+    frame = build_frames([cached], reject_local_resolution)[0]
+    video = next(block.video for block in frame.payload.blocks if isinstance(block, types.InputRichBlockVideo))
+    assert video.media == "cached-video-file-id"
+    assert video.video_cover == "cached-cover-file-id"
+
+    async def run():
+        client = SimpleNamespace(send_rich_message=AsyncMock(return_value=SimpleNamespace(id=21)))
+        state = job([cached])
+        store = SimpleNamespace(media_file=reject_local_resolution)
+        await TelegramSender(client).deliver(state, target(), store, lambda: None)
+        assert state["delivery"]["status"] == "sent"
+
+    asyncio.run(run())
+
+
 def test_native_live_photo_is_a_distinct_message_frame_and_inline_degrades_explicitly():
     live_media = [
         {"mediaId": "photo", "videoMediaId": "video", "type": "live_photo",

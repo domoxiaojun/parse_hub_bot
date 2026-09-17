@@ -60,11 +60,14 @@ class Store:
                 and self.db.execute("SELECT 1 FROM worker_owned_paths WHERE path=? AND kind='directory'",
                                     (str(directory.resolve()),)).fetchone() is not None)
 
-    def register_path(self, owner: str, path: Path, kind: str) -> None:
+    def register_path(self, owner: str, path: Path, kind: str, *, existing: bool = False) -> None:
         if kind not in {"directory", "file"} or path.parent.resolve() != self.files or path.is_symlink():
             raise ValueError("invalid preparation path")
         path = path.resolve()
-        if path.exists():
+        valid_existing = (kind == "directory" and path.is_dir()) or (kind == "file" and path.is_file())
+        if existing and not valid_existing:
+            raise ValueError("preparation path does not exist")
+        if not existing and path.exists():
             raise ValueError("preparation path already exists")
         self.db.execute("INSERT INTO worker_owned_paths VALUES (?,?,?,NULL)", (str(path), kind, owner))
         self.db.commit()

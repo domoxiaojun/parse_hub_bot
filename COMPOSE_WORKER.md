@@ -16,7 +16,15 @@ Compose挂载原目录：
 | ./downloads | /app/downloads | 下载与48小时媒体缓存 |
 | ./logs | /app/logs | 原日志路径保留 |
 
-Worker新增SQLite表带worker_前缀，原业务表保留。若原.env自定义DATABASE_URL、DATA_PATH或DOWNLOAD_DIR，请保留相同配置并确保对应路径已挂载。平台Cookie/代理仍存原YAML，gptbot Admin是该文件的远程编辑入口，保存后重启Worker生效。
+Worker启动时初始化原数据库表，并新增带worker_前缀的表；原业务表保留。若原.env自定义DATABASE_URL、DATA_PATH或DOWNLOAD_DIR，请保留相同配置并确保对应路径已挂载。平台Cookie/代理仍存原YAML，gptbot Admin是该文件的远程编辑入口，保存后重启Worker生效。
+
+如果原Bot由仓库的`docker-compose.yaml`运行，它默认使用命名卷`parse_hub_bot_data`，而本文件默认使用宿主机`./data`，两者不是同一存储。要让Worker复用原Bot的持久解析缓存和配置，使用可选覆盖文件：
+
+```sh
+docker compose -f compose.worker.yaml -f compose.worker.shared-data.yaml up -d --build
+```
+
+若实际卷名不同，先在部署机确认卷名，再设置`PARSEHUB_DATA_VOLUME`。覆盖文件将该现有卷作为external卷挂到`/app/data`，不会迁移或替换已有数据。原Bot本来就使用宿主`./data`时继续使用基础文件即可。
 
 ## 在部署机器构建和启动
 
@@ -33,7 +41,7 @@ docker compose -f compose.worker.yaml logs --tail=100 parsehub-worker
 
 镜像parsehub-worker:local复用当前Dockerfile从源码构建；Compose命令覆盖为python -m worker，不启动bot.py。原Dockerfile、原docker-compose.yaml及原Bot功能保持不变。仅新增独立Worker部署入口。
 
-容器内部显式允许监听0.0.0.0:8080，宿主端口默认仅127.0.0.1:8080。所有API仍需Bearer认证。健康检查验证协议版本2和配置的Bot ID；平台配置在启动时已从原YAML读取。
+容器内部显式允许监听0.0.0.0:8080，宿主端口默认仅127.0.0.1:8080。所有API仍需Bearer认证。健康检查验证协议版本3和配置的Bot ID；平台配置在启动时已从原YAML读取。
 
 ## gptbot连接配置
 
@@ -64,8 +72,9 @@ docker compose -f compose.worker.yaml restart parsehub-worker
 
 gptbot不再推送本地平台配置覆盖它。没有旧缓存或数据库迁移/删除步骤；原缓存记录保留，Worker仅复用自己的已验证记录。
 
-升级文件交接协议时，两端须配套更新。gptbot读取带认证、受租约保护的媒体流；Worker无需访问Telegram上传接口。旧媒体缓存通过新键隔离，不需要删除数据库。
+升级文件交接协议时，两端须配套更新。gptbot读取带认证、受租约保护的媒体流；直出请求由Worker完成Telegram发送。直出与文件交接缓存使用不同键，不需要删除数据库。
 
 ## 下载目录与文件名
 
-沿用原ParseHub.download(DOWNLOAD_DIR)：例如downloads/作品标题/作品标题.mp4，图集沿用001_作品标题.jpg等原命名；重名目录由原库生成作品标题_2。处理文件沿用processed目录及原组件的_remux、_h264、_split规则，归档使用原同名.tar.gz规则。缓存通过数据库登记目录与归档路径管理，不按worker-前缀扫描删除；没有登记的原下载不会被清理。
+Worker运行原`ParsePipeline`：例如downloads/作品标题/作品标题.mp4，图集沿用001_作品标题.jpg等原命名；重名目录由原库生成作品标题_2。下载重试、processed目录及_remux、_h264、_split规则均由原流水线决定，Worker只把结果适配为消息；归档使用原同名.tar.gz规则。缓存通过数据库登记目录与归档路径管理，不按worker-前缀扫描删除；没有登记的原下载不会被清理。
+

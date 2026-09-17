@@ -28,6 +28,8 @@ def configure_logging(level: str = "INFO") -> None:
 async def main() -> None:
     # Import the parsing adapter only after Worker settings have been validated.
     settings = WorkerSettings()  # type: ignore[call-arg]
+    from db.engine import close_db
+    from db.init import init_db
     from services.parser import ParseService
     from worker.engine import ParseHubEngine
     configure_logging(settings.worker_log_level)
@@ -44,11 +46,12 @@ async def main() -> None:
     runner = None
     sender_runtime = None
     try:
+        await init_db()
         store = Store(settings.data_path, settings.worker_cache_max_bytes,
                       database_path=settings.database_path, files_path=settings.download_dir)
         expected_id = settings.bot_token.get_secret_value().split(":", 1)[0]
         parse_service = ParseService()
-        engine = ParseHubEngine(store.files, parser=parse_service.parser, native_parse=parse_service.parse)
+        engine = ParseHubEngine(store.files, parse_service)
         client = create_sender_client(settings)
         sender_runtime = SenderRuntime(
             client, expected_id, sessions / f"{settings.worker_sender_session_name}.cooldown.json",
@@ -74,6 +77,7 @@ async def main() -> None:
             await sender_runtime.close()
         if store:
             store.close()
+        await close_db()
         lock.close()
 
 

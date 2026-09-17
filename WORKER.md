@@ -21,11 +21,15 @@ git push origin worker
 
 ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。更新旁边的 ParseHub 源码对照目录不会自动更新本项目依赖。
 
-Worker复用ParseHub全部平台注册能力，负责解析、下载、原文件/打包、媒体转换、固定48小时文件缓存和受认证的媒体文件读取，不监听用户消息。gptbot继续作为唯一update接收方。命中直出的解析轮由Worker通过独立no-updates客户端上传并发送RichMessage，返回回执和解析证据；该轮不调用LLM。未携带delivery的旧工具请求仍使用文件交接。
+Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
+`ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件。Worker只负责HTTP/幂等/租约、
+把原版输出适配为交付描述，以及最终Rich Message组装和Telegram发送。gptbot继续作为唯一update接收方；
+直出解析轮不调用LLM，未携带delivery的旧工具请求仍使用文件交接。
 
-生产解析入口直接绑定上游`services.parser.ParseService.parse()`。Worker不在解析前调用`get_raw_url`、不清洗或
-替换提交链接，也不在上游三次重试外再套重试；只有上游成功返回`raw_url`后才将它登记为缓存别名。
-Worker定制范围从解析结果适配、Telegram媒体准备、消息组装和gptbot HTTP协议开始。源结果严格保留
+生产解析先按原版`handle_parse()`顺序调用`ParseService.get_raw_url()`，再检查原`persistent_cache`（仅直出）
+和`parse_cache`，未命中时运行原`ParsePipeline`。`refresh=true`同时绕过两级原缓存。Worker不再调用
+`ParseResult.download()`、不另加下载重试、也不调用自己的媒体转换器。Worker定制从原版结果适配、
+消息组装和gptbot HTTP协议开始。源结果严格保留
 ParseHub的`video/image/multimedia/richtext`类型；普通正文标记为plain，只有`markdown_content`标记为
 markdown。ParseHub没有作者、发布时间或公开性证明字段，Worker不会臆造这些元数据。
 
@@ -41,7 +45,11 @@ Worker直接沿用原项目布局，无需复制成第二套配置：
 | 下载和48小时媒体缓存 | 原`DOWNLOAD_DIR`，默认`downloads/` |
 | 原 MTProto session | 保留原文件；Worker不再打开它 |
 
-原SQLite表保留；Worker任务、缓存、租约、上传引用放在同一文件的`worker_*`表中，不覆写原cache表。原Bot缓存记录不当作Worker已验证缓存直接复用。下载目录和文件名直接由原ParseHub生成（标题目录、重名后缀、原文件名），处理输出放在同目录processed，归档调用原打包函数生成同名.tar.gz；不添加worker-*、original/、media-001或固定media.tar.gz。Worker在数据库登记本次实际创建路径，取消/启动恢复/过期清理只删除登记路径，未登记历史下载保留。
+原SQLite表保留；Worker启动时运行原数据库初始化，任务、文件缓存和租约仍写入同一文件中的`worker_*`表，
+不覆写原`cache`表。直出preview会复用原Bot的持久`file_id`缓存，因此命中时不会重新解析、下载或转码；
+文件交接请求不使用该缓存，且两种交付使用不同Worker缓存键。下载目录和文件名由原`ParsePipeline`生成
+（标题目录、重名后缀、原文件名），处理输出沿用同目录`processed`，归档调用原打包函数生成同名`.tar.gz`。
+Worker只登记原流水线已经生成的输出用于租约和清理，未登记历史下载保留。
 
 Worker不监听消息；发送客户端使用独立持久会话data/sessions/worker_sender_<BotID>.session、in_memory=False、no_updates=True、plugins=None，不占用原bot_<BotID>.session。旧交互Bot不要同时处理同一消息，避免重复回复。
 
@@ -80,7 +88,7 @@ gptbot仅保存PARSEHUB_WORKER_URL、PARSEHUB_WORKER_SECRET、PARSEHUB_WORKER_AC
 
 ## API
 
-所有/api/v1请求都需要Bearer服务密钥，协议版本2（API路由仍为/api/v1）。gptbot和Worker需要配套升级，旧协议会明确拒绝，不静默返回文字。原生默认loopback；容器仅显式WORKER_ALLOW_CONTAINER_BIND=true允许0.0.0.0，由Compose限制宿主暴露。
+所有/api/v1请求都需要Bearer服务密钥，协议版本3（API路由仍为/api/v1）。gptbot和Worker需要配套升级，旧协议会明确拒绝，不静默返回文字。原生默认loopback；容器仅显式WORKER_ALLOW_CONTAINER_BIND=true允许0.0.0.0，由Compose限制宿主暴露。
 
 - GET /health：protocolVersion、botId、ready、version、configSource和directDelivery。directDelivery表示已配置发送能力；deliveryReady表示当前登录就绪，senderState为starting/cooldown/retrying/ready/error/stopped，retryAfterSeconds为剩余等待秒数。直出客户端同时检查能力和就绪状态。
 - GET /capabilities：实际ParseHub版本、platforms及preview/raw/zip模式。
@@ -93,19 +101,19 @@ gptbot仅保存PARSEHUB_WORKER_URL、PARSEHUB_WORKER_SECRET、PARSEHUB_WORKER_AC
 
 同一幂等键表示一次交付尝试。带delivery的任务重查返回持久回执，即使租约已释放也不重新发送；无delivery的旧准备任务保持租约过期拒绝语义。Worker重启将未完成任务标记interrupted，发送中无可靠确认的交付标记unknown。已持久化sent回执保持成功。
 
-直出任务在Worker内发送，不把媒体传回gptbot。每条RichMessage发送前持久化sending/inFlight，确认后记录messageIds或inline确认及已交付证据；终态回执保存后才释放lease。部分和未知发送不盲目自动补发。无delivery的旧工具任务仍由gptbot读取文件、上传发送并释放租约。媒体描述包含mediaId、sizeBytes、mimeType等，不再包含fileId。媒体缓存使用v2-files命名空间，旧注册引用不会命中。
+直出任务在Worker内发送，不把媒体传回gptbot。每条RichMessage发送前持久化sending/inFlight，确认后记录messageIds或inline确认及已交付证据；终态回执保存后才释放lease。部分和未知发送不盲目自动补发。无delivery的旧工具任务仍由gptbot读取文件、上传发送并释放租约。本地媒体使用mediaId、sizeBytes、mimeType等不透明描述；原持久缓存命中时，内部描述可直接携带同Bot的Telegram file_id，HTTP直出响应仍会清空results。
 
 ## 输出与缓存
 
-最多10个不同链接按原顺序返回，逐项失败隔离。preview处理图集、GIF、Live Photo配对、长图及视频合流/转换/分段；raw保留原文件为document；zip生成附metadata的.tar.gz；read_only不新增下载或上传。超限原文件/归档不静默改成预览。
+最多10个不同链接按原顺序返回，逐项失败隔离。preview直接适配原`ProcessedMedia`，图集、GIF、长图和视频的处理决定均来自原`ParsePipeline`；符合限制的Live Photo组装为原生实况消息。raw把原流水线下载文件作为document，Live Photo保留静态图和视频；zip打包原流水线生成的目录与metadata；read_only只使用原解析服务和解析缓存。超限原文件/归档不静默改成预览。
 
-固定172800秒从发布开始，访问不续期，容量默认10GiB，启动及每10分钟清理；持有租约的文件不会删除。匿名优先，明确挑战后最多一次Cookie尝试；无法确认公开性的内容拒绝交付。HTTP与yt-dlp请求受域名/私网/凭据边界约束，配置代理属于可信基础设施。
+固定172800秒从发布开始，访问不续期，容量默认10GiB，启动及每10分钟清理；持有租约的文件不会删除。Cookie与解析/下载代理均由原`platform_config.yaml`和原服务选择，Worker不增加挑战检测、额外Cookie尝试或网络栈改写。提交到Worker的入口URL仍拒绝本机、私网字面地址和内嵌凭据。
 
 ## 验证边界
 
 测试使用临时目录、临时SQLite、模拟平台/Telegram及真实本地小样本转换，不能替代真实平台、Telegram发送或部署验收。没有启动真实Bot、没有修改用户已有配置/数据库/session，也未在本机构建。
 
-原项目批量下载在单项下载失败时会移除整次下载目录；Worker保留这一原生行为并返回正文与媒体失败计数，转换阶段仍逐项保留成功文件。
+解析、下载或媒体处理失败时，Worker沿用原流水线的成功/失败结果，不再自行构造部分媒体结果。
 
 ## 直出卡片与确认
 

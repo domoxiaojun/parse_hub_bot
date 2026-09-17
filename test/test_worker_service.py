@@ -8,7 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from worker.app import create_app, public_job
 from worker.jobs import Jobs
-from worker.models import ConfigInput, JobInput
+from worker.models import ConfigInput, JobInput, MessageDelivery
 from worker.platform_config import PlatformConfigFile
 from worker.store import TTL, Store
 
@@ -40,8 +40,8 @@ class FakeEngine:
             self.cancelled = True
             raise
         directory = kwargs["directory"] / f"Title_{self.calls}"
-        kwargs["register_directory"](directory)
         directory.mkdir()
+        kwargs["register_directory"](directory)
         path = directory / "video.mp4"
         path.write_bytes(b"media")
         return {"platform": "youtube", "sourceUrl": url, "canonicalUrl": url,
@@ -185,6 +185,35 @@ def test_singleflight_cancellation_and_cache(tmp_path: Path) -> None:
         assert engine.calls == 1
         await jobs.close()
         store.close()
+    asyncio.run(run())
+
+
+def test_direct_delivery_isolated_and_enables_original_persistent_cache(tmp_path: Path) -> None:
+    class RecordingEngine(FakeEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.persistent_flags = []
+
+        async def prepare(self, url: str, **kwargs: Any) -> dict[str, Any]:
+            self.persistent_flags.append(kwargs["use_persistent_cache"])
+            return await super().prepare(url, **kwargs)
+
+    async def run() -> None:
+        instance = RecordingEngine()
+        store = Store(tmp_path)
+        jobs = Jobs(instance, store, "123")
+        jobs.configure(ConfigInput(version="1"))
+        file_request = request("files")
+        direct_request = request("direct").model_copy(update={
+            "delivery": MessageDelivery(surface="message", chatId="123"),
+        })
+        assert jobs.key(file_request.text, file_request) != jobs.key(direct_request.text, direct_request)
+        await jobs._prepare(file_request.text, file_request, jobs.config or {}, "files", "file-job")
+        await jobs._prepare(direct_request.text, direct_request, jobs.config or {}, "direct", "direct-job")
+        assert instance.persistent_flags == [False, True]
+        await jobs.close()
+        store.close()
+
     asyncio.run(run())
 
 

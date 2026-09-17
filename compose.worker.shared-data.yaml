@@ -1,0 +1,11 @@
+services:
+  parsehub-worker:
+    volumes:
+      - parsehub-data:/app/data
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+
+volumes:
+  parsehub-data:
+    external: true
+    name: ${PARSEHUB_DATA_VOLUME:-parse_hub_bot_data}

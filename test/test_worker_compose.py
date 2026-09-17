@@ -47,6 +47,16 @@ def test_compose_builds_repository_and_runs_only_worker() -> None:
     assert all(item in ignored for item in (".env", ".env.*", "data", "**/*.session", ".git"))
 
 
+def test_optional_override_reuses_original_compose_data_volume() -> None:
+    override = yaml.safe_load((ROOT / "compose.worker.shared-data.yaml").read_text())
+    volumes = override["services"]["parsehub-worker"]["volumes"]
+    assert volumes[0] == "parsehub-data:/app/data"
+    assert override["volumes"]["parsehub-data"] == {
+        "external": True,
+        "name": "${PARSEHUB_DATA_VOLUME:-parse_hub_bot_data}",
+    }
+
+
 def test_worker_reuses_original_paths_without_creating_them(tmp_path: Path) -> None:
     with patch.dict("os.environ", {}, clear=True):
         settings = WorkerSettings(**SETTINGS)

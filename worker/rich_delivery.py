@@ -34,8 +34,8 @@ class RichFrame:
 
 @dataclass
 class LivePhotoFrame:
-    photo: Path
-    video: Path
+    photo: Path | str
+    video: Path | str
     width: int
     height: int
     result_indices: list[int]
@@ -49,8 +49,8 @@ DeliveryFrame = RichFrame | LivePhotoFrame
 
 @dataclass
 class _LivePhotoUnit:
-    photo: Path
-    video: Path
+    photo: Path | str
+    video: Path | str
     width: int
     height: int
 
@@ -177,36 +177,38 @@ def integer(value: Any, *, duration: bool = False) -> int:
     return min(2147483647, math.ceil(value) if duration else round(value))
 
 
-def media_block(media: dict[str, Any], path: Path) -> Any:
+def media_block(media: dict[str, Any], source: Path | str) -> Any:
     kind = media["type"]
-    filename = Path(str(media.get("filename") or path.name)).name
+    source_name = source.name if isinstance(source, Path) else "media"
+    filename = Path(str(media.get("filename") or source_name)).name
     filename = re.sub(r"[\x00-\x1f\x7f]", "", filename)[:180] or "media"
     dimensions = {"width": integer(media.get("width")), "height": integer(media.get("height")),
                   "duration": integer(media.get("durationSeconds"), duration=True)}
     caption = (types.RichBlockCaption(text=literal("实况片段"))
                if media.get("pairedMediaId") and kind == "video" else None)
     if kind == "photo":
-        return types.InputRichBlockPhoto(types.InputMediaPhoto(path))
+        return types.InputRichBlockPhoto(types.InputMediaPhoto(source))
     if kind == "video":
         return types.InputRichBlockVideo(types.InputMediaVideo(
-            path, file_name=filename, supports_streaming=True, width=dimensions["width"],
+            source, file_name=filename, supports_streaming=True, width=dimensions["width"],
             height=dimensions["height"], duration=dimensions["duration"],
+            video_cover=media.get("telegramCoverFileId"),
         ), caption=caption)
     if kind == "animation":
         return types.InputRichBlockAnimation(types.InputMediaAnimation(
-            path, file_name=filename, width=dimensions["width"], height=dimensions["height"],
+            source, file_name=filename, width=dimensions["width"], height=dimensions["height"],
             duration=dimensions["duration"],
         ))
     if kind == "audio":
         return types.InputRichBlockAudio(types.InputMediaAudio(
-            path, file_name=filename, duration=dimensions["duration"],
+            source, file_name=filename, duration=dimensions["duration"],
         ))
     if kind == "voice":
         return types.InputRichBlockVoiceNote(types.InputMediaVoiceNote(
-            path, duration=dimensions["duration"],
+            source, duration=dimensions["duration"],
         ))
     if kind == "document":
-        return types.InputRichBlockDocument(types.InputMediaDocument(path, file_name=filename))
+        return types.InputRichBlockDocument(types.InputMediaDocument(source, file_name=filename))
     raise ValueError("unsupported_media_type")
 
 
@@ -222,17 +224,25 @@ def media_units(
     item: dict[str, Any], resolve_media: Callable[[str, str], Path], *, inline: bool,
 ) -> list[tuple[list[Any], int] | _LivePhotoUnit]:
     units: list[tuple[list[Any], int] | _LivePhotoUnit] = []
+
+    def source(media: dict[str, Any], media_id: str, telegram_key: str = "telegramFileId") -> Path | str:
+        file_id = media.get(telegram_key)
+        if isinstance(file_id, str) and file_id:
+            return file_id
+        return resolve_media(item["leaseId"], media_id)
+
     for media in item.get("media", []):
         if media.get("type") == "live_photo":
-            photo = resolve_media(item["leaseId"], media["mediaId"])
-            video = resolve_media(item["leaseId"], media["videoMediaId"])
+            photo = source(media, media["mediaId"])
+            video = source(media, media["videoMediaId"], "telegramVideoFileId")
             if inline:
+                video_name = video.name if isinstance(video, Path) else "live-photo.mp4"
                 units.append(([
                     types.InputRichBlockPhoto(types.InputMediaPhoto(photo)),
                     types.InputRichBlockVideo(
                         types.InputMediaVideo(
                             video,
-                            file_name=Path(str(media.get("videoFilename") or video.name)).name,
+                            file_name=Path(str(media.get("videoFilename") or video_name)).name,
                             supports_streaming=True,
                             width=integer(media.get("width")),
                             height=integer(media.get("height")),
@@ -249,7 +259,10 @@ def media_units(
                     height=integer(media.get("height")),
                 ))
             continue
-        units.append(([media_block(media, resolve_media(item["leaseId"], media["mediaId"]))], 1))
+        file_id = media.get("mediaId")
+        if not isinstance(file_id, str):
+            file_id = ""
+        units.append(([media_block(media, source(media, file_id))], 1))
     return units
 
 

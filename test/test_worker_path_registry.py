@@ -73,6 +73,17 @@ def test_cancel_cannot_remove_another_preparation_or_existing_file(tmp_path: Pat
     store.close()
 
 
+def test_completed_original_pipeline_directory_can_be_adopted(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    directory = store.files / "Original pipeline output"
+    directory.mkdir()
+    (directory / "media.jpg").write_bytes(b"media")
+    store.register_path("owner", directory, "directory", existing=True)
+    cache = store.publish("key", {"_files": [str(directory / "media.jpg")]}, directory, owner="owner")
+    assert store.lookup("key")[0] == cache
+    store.close()
+
+
 def test_no_root_or_unregistered_file_can_be_published_or_removed(tmp_path: Path) -> None:
     store = Store(tmp_path)
     legacy = store.files / "history.mp4"

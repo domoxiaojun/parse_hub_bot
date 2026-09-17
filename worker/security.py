@@ -1,9 +1,6 @@
-"""Worker input and error boundaries; never patch ParseHub's network stack."""
+"""Worker input and stable error boundaries."""
 
 import ipaddress
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
@@ -14,35 +11,6 @@ class EngineError(Exception):
         self.code = code
         self.stage = stage
         super().__init__(code)
-
-
-@dataclass
-class RequestPolicy:
-    """Compatibility data only; Worker no longer patches provider requests."""
-    platform: str
-    credentials: bool = False
-    phase: str = 'parse'
-    proxy: str | None = None
-    public: bool = False
-    restricted: bool = False
-
-
-@contextmanager
-def request_policy(policy: RequestPolicy) -> Iterator[RequestPolicy]:
-    yield policy
-
-
-async def validate_public_url(url: str) -> None:
-    validate_url(url)
-
-
-def inspect_visibility(value: object, policy: RequestPolicy, depth: int = 0) -> None:
-    """Retained as a no-op compatibility hook; provider response is authoritative."""
-
-
-def is_challenge(exc: Exception, policy: RequestPolicy) -> bool:
-    return False
-
 
 def validate_url(url: str) -> str:
     """Validate submitted URLs, without rewriting provider requests or redirects."""
