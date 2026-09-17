@@ -594,3 +594,71 @@ def test_all_failed_jobs_send_error_card_but_never_report_parse_success(tmp_path
         await jobs.close()
         store.close()
     asyncio.run(run())
+
+
+def test_rejected_native_live_photo_falls_back_to_rich_frame(caplog):
+    async def run():
+        client = SimpleNamespace(
+            send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21), SimpleNamespace(id=22),
+                                                     SimpleNamespace(id=23)]),
+            send_live_photo=AsyncMock(side_effect=Forbidden()),
+        )
+        live = {'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
+                'width': 1080, 'height': 1440, 'durationSeconds': 3}
+        state = job([result(media=[live], content='正文')])
+        store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
+        with caplog.at_level("WARNING", logger="parsehub.worker"):
+            await TelegramSender(client).deliver(state, target(), store, lambda: None)
+        assert state['delivery']['status'] == 'sent'
+        assert state['delivery']['messageIds'] == [21, 22, 23]
+        assert state['delivery']['mediaCount'] == 1
+        fallback = client.send_rich_message.call_args_list[1].kwargs['rich_message']
+        assert isinstance(fallback.blocks[0], types.InputRichBlockPhoto)
+        assert fallback.blocks[0].photo.media == Path('a' * 32)
+        assert isinstance(fallback.blocks[1], types.InputRichBlockVideo)
+        assert fallback.blocks[1].video.media == Path('b' * 32)
+        assert rich_text(fallback.blocks[1].caption.text) == '实况视频'
+        assert any('event=delivery.live_photo_fallback' in r.message and 'rpc=' in r.message
+                   for r in caplog.records)
+    asyncio.run(run())
+
+
+def test_delivery_failure_is_logged_without_secrets(caplog):
+    async def run():
+        client = SimpleNamespace(
+            send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21)]),
+            send_live_photo=AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'id'")),
+        )
+        live = {'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
+                'width': 1080, 'height': 1440, 'durationSeconds': 3}
+        state = job([result(media=[live], content='正文 https://secret.example/token')])
+        store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
+        with caplog.at_level("WARNING", logger="parsehub.worker"):
+            await TelegramSender(client).deliver(state, target(), store, lambda: None)
+        # A non-RPC failure is ambiguous: no fallback, status unknown, but it is logged.
+        assert state['delivery']['status'] == 'unknown'
+        assert client.send_rich_message.call_count == 1
+        failed = [r.message for r in caplog.records if 'event=delivery.failed' in r.message]
+        assert failed and 'kind=live_photo' in failed[0] and 'error_type=AttributeError' in failed[0]
+        assert 'secret.example' not in ''.join(r.getMessage() for r in caplog.records)
+        assert 'NoneType' not in ''.join(r.getMessage() for r in caplog.records)
+    asyncio.run(run())
+
+
+def test_fallback_frame_rejection_is_recorded_as_partial(caplog):
+    async def run():
+        client = SimpleNamespace(
+            send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21), Forbidden()]),
+            send_live_photo=AsyncMock(side_effect=Forbidden()),
+        )
+        live = {'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
+                'width': 1080, 'height': 1440, 'durationSeconds': 3}
+        state = job([result(media=[live], content='正文')])
+        store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
+        with caplog.at_level("WARNING", logger="parsehub.worker"):
+            await TelegramSender(client).deliver(state, target(), store, lambda: None)
+        assert state['delivery']['status'] == 'partial'
+        assert state['delivery']['messageIds'] == [21]
+        assert state['delivery']['error']['code'] == 'telegram_rejected'
+        assert any('event=delivery.failed' in r.message and 'status=partial' in r.message for r in caplog.records)
+    asyncio.run(run())

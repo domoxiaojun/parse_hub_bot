@@ -47,6 +47,25 @@ class LivePhotoFrame:
 DeliveryFrame = RichFrame | LivePhotoFrame
 
 
+def live_photo_fallback_frame(frame: LivePhotoFrame) -> RichFrame:
+    """Degrade a rejected native live photo to a Rich photo plus captioned video."""
+    video_name = frame.video.name if isinstance(frame.video, Path) else "live-photo.mp4"
+    blocks: list[Any] = [
+        types.InputRichBlockPhoto(types.InputMediaPhoto(frame.photo)),
+        types.InputRichBlockVideo(
+            types.InputMediaVideo(
+                frame.video, file_name=video_name, supports_streaming=True,
+                width=frame.width, height=frame.height,
+            ),
+            caption=types.RichBlockCaption(text=literal("实况视频")),
+        ),
+    ]
+    return RichFrame(
+        types.InputRichMessage(blocks=blocks, skip_entity_detection=True),
+        list(frame.result_indices), frame.text, frame.media_count, list(frame.completed_result_indices),
+    )
+
+
 @dataclass
 class _LivePhotoUnit:
     photo: Path | str

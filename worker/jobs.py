@@ -178,6 +178,11 @@ class Jobs:
                 self.store.save_job(job)
                 await self.sender.deliver(job, request.delivery, self.store, lambda: self.store.save_job(job))
                 success = job["delivery"]["status"] == "sent"
+                if not success:
+                    logger.warning("event=delivery.incomplete job=%s delivery=%s frames=%s/%s code=%s",
+                                   job["id"], job["delivery"]["status"], job["delivery"].get("completedFrames", 0),
+                                   job["delivery"].get("totalFrames", 0),
+                                   (job["delivery"].get("error") or {}).get("code", "none"))
                 job.update(status="ready" if success else "failed", stage="delivered" if success else "delivery_failed")
                 if not success:
                     job["error"] = {"code": "delivery_incomplete", "message": "部分或全部解析结果未完成交付"}
@@ -191,7 +196,9 @@ class Jobs:
                 for item in job["results"]:
                     if item.get("leaseId"):
                         self.store.release(item["leaseId"])
-        except Exception:
+        except Exception as error:
+            logger.warning("event=job.failed job=%s stage=%s error_type=%s", job["id"], job.get("stage"),
+                           type(error).__name__)
             job.update(status="failed", stage="failed", error={"code": "worker_internal", "message": "任务处理失败"})
             if request.delivery is not None:
                 job["delivery"]["status"] = "unknown" if job["delivery"].get("inFlight") else "failed"

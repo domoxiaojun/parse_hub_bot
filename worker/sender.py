@@ -1,6 +1,7 @@
 """Outbound-only Telegram delivery with durable per-frame acknowledgement."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -11,9 +12,24 @@ from pyrogram.errors import FloodWait, MessageNotModified, RPCError, SlowmodeWai
 from worker.config import WorkerSettings
 from worker.models import InlineDelivery, MessageDelivery
 from worker.reading_delivery import prepare_reading_frame
-from worker.rich_delivery import LivePhotoFrame, bounded, build_frames, evidence_for
+from worker.rich_delivery import (
+    DeliveryFrame,
+    LivePhotoFrame,
+    bounded,
+    build_frames,
+    evidence_for,
+    live_photo_fallback_frame,
+)
 from worker.sender_runtime import SenderRuntime
 from worker.store import Store
+
+logger = logging.getLogger("parsehub.worker")
+
+
+def _error_fields(error: BaseException) -> str:
+    """Log only the error class and Telegram's RPC identifier, never message text."""
+    rpc = getattr(error, "ID", None) if isinstance(error, RPCError) else None
+    return f"error_type={type(error).__name__} rpc={rpc or 'none'}"
 
 
 def create_sender_client(settings: WorkerSettings) -> Client:
@@ -82,47 +98,17 @@ class TelegramSender:
             receipt.update(status="sending", frameIndex=index, inFlight=True)
             checkpoint()  # Must succeed before starting a visible side effect.
             try:
-                response = None
-                for attempt in range(3):
-                    try:
-                        if isinstance(target, MessageDelivery):
-                            reply = (types.ReplyParameters(message_id=previous_message_id)
-                                     if previous_message_id else None)
-                            if isinstance(frame, LivePhotoFrame):
-                                response = await self.client.send_live_photo(
-                                    chat_id=int(target.chatId), live_photo=frame.video, photo=frame.photo,
-                                    width=frame.width, height=frame.height,
-                                    reply_parameters=reply, message_thread_id=target.messageThreadId,
-                                )
-                            else:
-                                response = await self.client.send_rich_message(
-                                    chat_id=int(target.chatId), rich_message=frame.payload,
-                                    reply_parameters=reply, message_thread_id=target.messageThreadId,
-                                )
-                            if not response or not getattr(response, "id", None):
-                                raise OSError("missing_delivery_ack")
-                        else:
-                            if isinstance(frame, LivePhotoFrame):
-                                raise ValueError("inline_live_photo_plan")
-                            response = await self.client.edit_inline_text(
-                                inline_message_id=target.inlineMessageId, rich_message=frame.payload,
-                            )
-                            if not response:
-                                raise OSError("missing_delivery_ack")
-                        break
-                    except (FloodWait, SlowmodeWait) as error:
-                        if attempt == 2 or not isinstance(error.value, int | float) or error.value > 60:
-                            raise
-                        receipt["inFlight"] = False
-                        checkpoint()
-                        await asyncio.sleep(max(0, error.value))
-                        receipt["inFlight"] = True
-                        checkpoint()
-                    except MessageNotModified:
-                        if isinstance(target, MessageDelivery):
-                            raise
-                        response = True
-                        break
+                try:
+                    response = await self._send_with_retry(target, frame, previous_message_id, receipt, checkpoint)
+                except RPCError as error:
+                    if not (isinstance(frame, LivePhotoFrame) and isinstance(target, MessageDelivery)):
+                        raise
+                    # Telegram rejected the native live photo before anything was sent:
+                    # deliver the same photo and video as a Rich frame instead of losing the item.
+                    logger.warning("event=delivery.live_photo_fallback job=%s frame=%s %s",
+                                   job["id"], index, _error_fields(error))
+                    frame = live_photo_fallback_frame(frame)
+                    response = await self._send_with_retry(target, frame, previous_message_id, receipt, checkpoint)
                 if isinstance(target, MessageDelivery):
                     assert response is not None
                     receipt["messageIds"].append(response.id)
@@ -146,6 +132,10 @@ class TelegramSender:
                 # A known RPC rejection did not send this frame. Transport failures are ambiguous.
                 known = isinstance(error, RPCError)
                 status = ("partial" if receipt.get("completedFrames") else "failed") if known else "unknown"
+                logger.warning("event=delivery.failed job=%s frame=%s/%s kind=%s status=%s %s",
+                               job["id"], index, len(frames),
+                               "live_photo" if isinstance(frame, LivePhotoFrame) else "rich", status,
+                               _error_fields(error))
                 receipt.update(status=status,
                                inFlight=not known, error={"code": "telegram_rejected" if known else "delivery_unknown",
                                                           "message": "交付未完成，请检查已有消息后重试"})
@@ -154,3 +144,52 @@ class TelegramSender:
         degraded = any("error" in item or item.get("mediaFailureCount", 0) > 0 for item in job["results"])
         receipt.update(status="partial" if degraded else "sent", inFlight=False)
         checkpoint()
+
+    async def _send(
+        self, target: MessageDelivery | InlineDelivery, frame: DeliveryFrame, previous_message_id: int | None,
+    ) -> Any:
+        if isinstance(target, MessageDelivery):
+            reply = types.ReplyParameters(message_id=previous_message_id) if previous_message_id else None
+            if isinstance(frame, LivePhotoFrame):
+                response = await self.client.send_live_photo(
+                    chat_id=int(target.chatId), live_photo=frame.video, photo=frame.photo,
+                    width=frame.width, height=frame.height,
+                    reply_parameters=reply, message_thread_id=target.messageThreadId,
+                )
+            else:
+                response = await self.client.send_rich_message(
+                    chat_id=int(target.chatId), rich_message=frame.payload,
+                    reply_parameters=reply, message_thread_id=target.messageThreadId,
+                )
+            if not response or not getattr(response, "id", None):
+                raise OSError("missing_delivery_ack")
+            return response
+        if isinstance(frame, LivePhotoFrame):
+            raise ValueError("inline_live_photo_plan")
+        response = await self.client.edit_inline_text(
+            inline_message_id=target.inlineMessageId, rich_message=frame.payload,
+        )
+        if not response:
+            raise OSError("missing_delivery_ack")
+        return response
+
+    async def _send_with_retry(
+        self, target: MessageDelivery | InlineDelivery, frame: DeliveryFrame, previous_message_id: int | None,
+        receipt: dict[str, Any], checkpoint: Callable[[], None],
+    ) -> Any:
+        for attempt in range(3):
+            try:
+                return await self._send(target, frame, previous_message_id)
+            except (FloodWait, SlowmodeWait) as error:
+                if attempt == 2 or not isinstance(error.value, int | float) or error.value > 60:
+                    raise
+                receipt["inFlight"] = False
+                checkpoint()
+                await asyncio.sleep(max(0, error.value))
+                receipt["inFlight"] = True
+                checkpoint()
+            except MessageNotModified:
+                if isinstance(target, MessageDelivery):
+                    raise
+                return True
+        raise OSError("retry_exhausted")
