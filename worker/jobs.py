@@ -72,7 +72,7 @@ class Jobs:
 
     @staticmethod
     def key(url: str, request: JobInput) -> str:
-        return hashlib.sha256(f"v4-native-requests:{request.accountId}:{request.outputMode}:{url}".encode()).hexdigest()
+        return hashlib.sha256(f"v6-source-media:{request.accountId}:{request.outputMode}:{url}".encode()).hexdigest()
 
     async def _prepare(self, url: str, request: JobInput, config: dict[str, Any], key: str,
                        job_id: str) -> tuple[str, dict[str, Any]]:
@@ -102,7 +102,9 @@ class Jobs:
                 )
             if result.get("access") != "public":
                 raise ValueError("content_restricted")
-            reusable = not (result.get("mediaFailureCount", 0) and not result.get("media"))
+            # Never keep a partial conversion as the canonical cache result. A retry may
+            # recover after a codec/runtime update, as with HEIC support in Worker.
+            reusable = result.get("mediaFailureCount", 0) == 0
             # A read-only parse must not become an auto hit that suppresses future media downloads.
             reusable = reusable and request.mode != "read_only"
             if not result.get("_files"):
@@ -117,17 +119,12 @@ class Jobs:
     async def _result(self, url: str, request: JobInput, config: dict[str, Any], job_id: str) -> dict[str, Any]:
         key = self.key(url, request)
         hit = None if request.refresh else self.store.lookup(key)
-        shared_content_key = key
-        if not hit and hasattr(self.engine, "cache_identity"):
-            # Resolve with native URL normalization only on misses. Short/formal URLs then
-            # share the expensive parse/download/upload work from the first call.
-            identity = await self.engine.cache_identity(url, config)
-            shared_content_key = self.key(identity, request)
-            hit = None if request.refresh else self.store.lookup(shared_content_key)
         if hit:
             cache_id, result = hit
         else:
-            shared_key = f"{shared_content_key}:{request.mode}:{config['version']}:{request.refresh}"
+            # Share only byte-identical submitted URLs. Resolving or cleaning a short URL
+            # here would add a network request that the upstream ParseService does not own.
+            shared_key = f"{key}:{request.mode}:{config['version']}:{request.refresh}"
             if shared_key not in self.shared:
                 task = asyncio.create_task(self._prepare(url, request, config, key, job_id))
                 self.shared[shared_key] = (task, set())

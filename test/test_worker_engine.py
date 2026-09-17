@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from parsehub import ParseHub
+from parsehub.errors import ParseError
 from parsehub.types import ImageRef, LivePhotoRef, VideoParseResult, VideoRef
 from PIL import Image
 from pyrogram import raw
@@ -66,7 +67,7 @@ def engine(tmp_path, result=None):
         get_platforms=lambda: [{'id': 'youtube', 'name': 'YouTube', 'supported_types': ['video']}],
         parse=AsyncMock(return_value=result or FakeResult()),
     )
-    return ParseHubEngine(tmp_path, parser)
+    return ParseHubEngine(tmp_path, parser, parser.parse)
 
 
 def run(coro):
@@ -74,8 +75,9 @@ def run(coro):
 
 
 def test_all_installed_platforms_exposed_without_bot_import(tmp_path):
-    actual = ParseHubEngine(tmp_path)
-    assert {p['id'] for p in actual.capabilities()['platforms']} == {p['id'] for p in ParseHub().get_platforms()}
+    parser = ParseHub()
+    actual = ParseHubEngine(tmp_path, parser, AsyncMock())
+    assert {p['id'] for p in actual.capabilities()['platforms']} == {p['id'] for p in parser.get_platforms()}
     assert len(actual.capabilities()['platforms']) > 7
 
 
@@ -90,7 +92,28 @@ def test_read_only_no_download_or_upload(tmp_path):
     instance = engine(tmp_path, FakeResult([ImageRef(url='https://cdn.example/photo')]))
     result = run(instance.prepare('https://youtube.com/a', mode='read_only'))
     assert result['content'] == 'body' and result['media'] == []
+    assert result['resultType'] == 'image' and result['contentFormat'] == 'plain'
+    assert result['plainContent'] == 'body' and 'markdownContent' not in result
+    assert 'author' not in result and 'publishedAt' not in result
     assert not list(tmp_path.iterdir())
+
+
+def test_richtext_preserves_source_markdown_and_skips_detached_media_download(tmp_path):
+    parsed = FakeResult([ImageRef(url='https://cdn.example/photo')])
+    parsed.type = SimpleNamespace(value='richtext')
+    parsed.content = '派生纯文本'
+    parsed.markdown_content = '# 标题\n\n正文 ![](https://cdn.example/photo)'
+    parsed.download = AsyncMock()
+    instance = engine(tmp_path, parsed)
+
+    result = run(instance.prepare('https://youtube.com/a', directory=tmp_path))
+
+    assert result['resultType'] == 'richtext' and result['contentType'] == 'article'
+    assert result['contentFormat'] == 'markdown'
+    assert result['plainContent'] == '派生纯文本'
+    assert result['content'] == result['markdownContent'] == parsed.markdown_content
+    assert result['media'] == []
+    parsed.download.assert_not_awaited()
 
 
 def test_native_batch_download_failure_preserves_text(tmp_path):
@@ -135,7 +158,7 @@ def test_real_parsehub_video_download_through_file_handoff(tmp_path, monkeypatch
         monkeypatch.setattr('parsehub.types.result.download', download)
         parser = SimpleNamespace(get_platform=lambda _: SimpleNamespace(id='xhs'),
                                  parse=AsyncMock(return_value=parsed))
-        instance = ParseHubEngine(tmp_path, parser=parser)
+        instance = ParseHubEngine(tmp_path, parser=parser, native_parse=parser.parse)
         result = await instance.prepare(parsed.raw_url, directory=tmp_path)
         assert result['mediaFailureCount'] == 0
         assert len(result['media']) == 1
@@ -157,19 +180,22 @@ import logging
 import json
 from worker.engine import ParseHubEngine
 from worker.__main__ import configure_logging
-configure_logging()
+configure_logging('DEBUG')
 logging.getLogger('parsehub.worker').info('event=prepare.progress stage=upload')
 logging.getLogger('parsehub.worker').warning('event=media.failed stage=upload')
+print(f"levels={logging.getLogger('parsehub.worker').getEffectiveLevel()},"
+      f"{logging.getLogger('httpx').getEffectiveLevel()}")
 '''], capture_output=True, text=True, check=True)
     assert 'event=prepare.progress stage=upload' in result.stderr
     assert 'event=media.failed stage=upload' in result.stderr
+    assert 'levels=10,20' in result.stdout
 
 
 def test_raw_livephoto_keeps_pair_and_archive_metadata(tmp_path):
     instance = engine(tmp_path, FakeResult([LivePhotoRef(url='https://cdn.example/good', video_url='https://cdn/video')]))
     raw_result = run(instance.prepare('https://youtube.com/a', output_mode='raw', directory=tmp_path / 'raw'))
     assert [item['type'] for item in raw_result['media']] == ['document', 'document']
-    assert raw_result['media'][0]['pairedMediaId'] == raw_result['media'][1]['pairedMediaId']
+    assert all('pairedMediaId' not in item and 'pairedMediaRole' not in item for item in raw_result['media'])
     archive_result = run(instance.prepare('https://youtube.com/a', output_mode='zip', directory=tmp_path / 'zip'))
     assert archive_result['media'][0]['filename'].endswith('.tar.gz')
     with tarfile.open(tmp_path / 'zip' / 'test.tar.gz') as archive:
@@ -177,23 +203,62 @@ def test_raw_livephoto_keeps_pair_and_archive_metadata(tmp_path):
         assert any(name.endswith('_video.mp4') for name in archive.getnames())
 
 
-def test_cookie_once_and_unknown_blocked(tmp_path):
+def test_preview_livephoto_is_one_atomic_media_item(tmp_path, monkeypatch):
+    async def prepare(path, *_args, **_kwargs):
+        is_video = Path(path).suffix == '.mp4'
+        return [{
+            'path': Path(path),
+            'type': 'video' if is_video else 'photo',
+            'filename': Path(path).name,
+            'mimeType': 'video/mp4' if is_video else 'image/png',
+            'width': 32,
+            'height': 16,
+            **({'durationSeconds': 3} if is_video else {}),
+        }]
+
+    monkeypatch.setattr('worker.engine.prepare_file', prepare)
+    instance = engine(tmp_path, FakeResult([
+        LivePhotoRef(url='https://cdn.example/good', video_url='https://cdn.example/video'),
+    ]))
+    result = run(instance.prepare('https://youtube.com/a', directory=tmp_path))
+
+    assert len(result['media']) == 1
+    live = result['media'][0]
+    assert live['type'] == 'live_photo' and live['durationSeconds'] == 3
+    assert live['mediaId'] != live['videoMediaId']
+    assert set(result['_mediaFiles']) == {live['mediaId'], live['videoMediaId']}
+
+
+@pytest.mark.parametrize(
+    ('cookies', 'expected'),
+    [([], 'credentials_required'), (['secret'], 'credentials_invalid')],
+)
+def test_login_required_has_actionable_code_and_safe_diagnostics(tmp_path, caplog, cookies, expected):
+    caplog.set_level(logging.DEBUG, logger='parsehub.worker')
     instance = engine(tmp_path)
-    instance.configure({'platforms': {'youtube': {'cookies': ['secret1', 'secret2']}}})
-    instance.parser.parse.side_effect = [ValueError('login required'), FakeResult()]
-    assert run(instance.prepare('https://youtube.com/a'))['access'] == 'public'
-    assert len(instance.parser.parse.call_args_list) == 2
-    assert instance.parser.parse.call_args_list[0].kwargs['proxy'] is None
-    assert all('cookie' in call.kwargs for call in instance.parser.parse.call_args_list)
+    instance.configure({'platforms': {'youtube': {'cookies': cookies}}})
+    instance.parser.parse.side_effect = ParseError(
+        '该帖子需要登录后查看 Cookie=private https://example.test/?token=secret'
+    )
+
+    with pytest.raises(EngineError, match=expected):
+        run(instance.prepare('https://youtube.com/a'))
+
+    assert 'reason=login_required' in caplog.text
+    assert f'credential_used={str(bool(cookies)).lower()}' in caplog.text
+    assert 'event=upstream.diagnostic' in caplog.text
+    assert 'private' not in caplog.text and 'token=secret' not in caplog.text
 
 
 def test_cookie_explicit_public_and_restricted(tmp_path):
     instance = engine(tmp_path)
     instance.configure({'platforms': {'youtube': {'cookies': ['secret']}}})
-    instance.parser.parse.side_effect = [ValueError('login required'), FakeResult(access='public')]
-    assert run(instance.prepare('https://youtube.com/a', mode='read_only'))['access'] == 'public'
-    instance.parser.parse.side_effect = [FakeResult(access='restricted')]
-    assert run(instance.prepare('https://youtube.com/a'))['access'] == 'public'
+    instance.parser.parse.return_value = FakeResult(access='public')
+    result = run(instance.prepare('https://youtube.com/a', mode='read_only'))
+    assert result['access'] == 'public' and result['externalPublicationAllowed'] is False
+    instance.parser.parse.return_value = FakeResult(access='restricted')
+    result = run(instance.prepare('https://youtube.com/a'))
+    assert result['access'] == 'public' and result['externalPublicationAllowed'] is False
 
 
 def test_cookie_scope_on_redirect_and_download(monkeypatch):
@@ -370,35 +435,27 @@ def test_registered_video_contains_local_thumbnail_and_cover(tmp_path):
     assert 'thumbnailPath' not in result and 'path' not in result
 
 
-def test_cache_identity_shortlink_anonymous_and_keeps_bilibili_part(tmp_path, monkeypatch):
-    parser = ParseHub()
-    instance = ParseHubEngine(tmp_path, parser)
-    raw = AsyncMock(return_value='https://www.bilibili.com/video/BV1234567890?p=2')
-    monkeypatch.setattr(parser, 'get_raw_url', raw)
-    config = {'platforms': {'bilibili': {'cookies': ['must-not-send'], 'parser_proxies': []}}}
-    original = 'https://b23.tv/share-token'
-    identity = run(instance.cache_identity(original, config))
-    assert identity == 'https://www.bilibili.com/video/BV1234567890?p=2'
-    raw.assert_awaited_once_with(original, proxy=None, clean_all=False)
-    assert original == 'https://b23.tv/share-token'
+def test_production_parse_delegates_once_to_upstream_service(tmp_path):
+    parser = SimpleNamespace(get_platform=lambda _: SimpleNamespace(id='youtube'))
+    upstream_parse = AsyncMock(return_value=FakeResult())
+    instance = ParseHubEngine(tmp_path, parser=parser, native_parse=upstream_parse)
+    instance.configure({'platforms': {'youtube': {'cookies': ['secret'], 'parser_proxies': ['http://proxy']}}})
+    url = 'https://youtube.com/watch?v=original'
+
+    result = run(instance.prepare(url, mode='read_only'))
+
+    upstream_parse.assert_awaited_once_with(url)
+    assert result['sourceUrl'] == url
 
 
-def test_cache_identity_removes_only_xhs_access_token(tmp_path, monkeypatch):
-    parser = ParseHub()
-    instance = ParseHubEngine(tmp_path, parser)
-    url = 'https://www.xiaohongshu.com/explore/64aaa?xsec_token=access'
-    monkeypatch.setattr(parser, 'get_raw_url', AsyncMock(return_value=url))
-    assert run(instance.cache_identity(url)) == 'https://www.xiaohongshu.com/explore/64aaa'
-    # prepare still receives original URL; identity never destroys access parameters.
-    assert url.endswith('?xsec_token=access')
+def test_production_parse_does_not_add_retries_around_upstream_service(tmp_path):
+    parser = SimpleNamespace(get_platform=lambda _: SimpleNamespace(id='youtube'))
+    upstream_parse = AsyncMock(side_effect=ParseError('upstream final failure'))
+    instance = ParseHubEngine(tmp_path, parser=parser, native_parse=upstream_parse)
 
-
-def test_cache_identity_rejects_cross_platform_redirect(tmp_path, monkeypatch):
-    parser = ParseHub()
-    instance = ParseHubEngine(tmp_path, parser)
-    monkeypatch.setattr(parser, 'get_raw_url', AsyncMock(return_value='https://www.youtube.com/watch?v=x'))
-    with pytest.raises(EngineError, match='upstream_http'):
-        run(instance.cache_identity('https://b23.tv/share-token'))
+    with pytest.raises(EngineError, match='upstream_contract'):
+        run(instance.prepare('https://youtube.com/watch?v=original'))
+    upstream_parse.assert_awaited_once()
 
 
 def test_native_names_and_registration_before_download(tmp_path, monkeypatch):

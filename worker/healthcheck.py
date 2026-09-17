@@ -15,7 +15,7 @@ def main() -> int:
         with build_opener(ProxyHandler({})).open(request, timeout=5) as response:
             data = json.loads(response.read(16384))
         # Configuration/sender readiness is separate from liveness, including Telegram FloodWait.
-        return 0 if data.get("protocolVersion") == 2 and data.get("botId") == bot_id else 1
+        return 0 if data.get("protocolVersion") == 3 and data.get("botId") == bot_id else 1
     except Exception:
         return 1
 

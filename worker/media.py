@@ -7,12 +7,17 @@ import mimetypes
 from pathlib import Path
 from typing import Any, cast
 
+import pillow_heif
 from PIL import Image
 
 from utils.media_processing_unit import MediaProcessingUnit
 from worker.security import EngineError
 
 MAX_FILE_SIZE = 2_000_000_000
+
+# The interactive Bot registers this in bot.py. Worker is an independent entrypoint,
+# so register HEIC/HEIF (and pillow-heif's AVIF opener) in the media module it uses.
+pillow_heif.register_heif_opener()
 
 
 async def run_process(*args: str, timeout: float = 1800) -> bytes:

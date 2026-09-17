@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from worker.app import create_app
+from worker.app import create_app, public_job
 from worker.jobs import Jobs
 from worker.models import ConfigInput, JobInput
 from worker.platform_config import PlatformConfigFile
@@ -45,7 +45,8 @@ class FakeEngine:
         path = directory / "video.mp4"
         path.write_bytes(b"media")
         return {"platform": "youtube", "sourceUrl": url, "canonicalUrl": url,
-                "content": "hello", "contentType": "post", "contentFormat": "markdown", "access": "public",
+                "content": "hello", "plainContent": "hello", "resultType": "video",
+                "contentType": "post", "contentFormat": "plain", "access": "public",
                 "media": [{"type": "video", "mediaId": "a" * 32, "sizeBytes": 5}], "_files": [str(path)],
                 "_mediaFiles": {"a" * 32: {"path": str(path), "sizeBytes": 5, "mimeType": "video/mp4"}}}
 
@@ -53,6 +54,13 @@ class FakeEngine:
 def request(key: str, **kwargs: Any) -> JobInput:
     return JobInput(text="https://youtube.com/watch?v=x", accountId="123", requestId="trace",
                     idempotencyKey=key, **kwargs)
+
+
+def test_direct_delivery_http_view_redacts_prepared_results() -> None:
+    prepared = {"id": "job", "results": [{"content": "private body"}],
+                "delivery": {"status": "sent"}, "evidence": {"content": "bounded"}}
+    assert public_job(prepared) == {**prepared, "results": []}
+    assert public_job({"id": "job", "results": prepared["results"]})["results"] == prepared["results"]
 
 
 def test_http_identity_config_and_private_results(tmp_path: Path) -> None:
@@ -294,6 +302,27 @@ def test_all_media_failed_is_not_reused(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_partial_media_failure_is_not_reused(tmp_path: Path) -> None:
+    class PartialMediaEngine(FakeEngine):
+        async def prepare(self, url: str, **kwargs: Any) -> dict[str, Any]:
+            result = await super().prepare(url, **kwargs)
+            result["mediaFailureCount"] = 1
+            return result
+
+    async def run() -> None:
+        engine = PartialMediaEngine()
+        store = Store(tmp_path)
+        jobs = Jobs(engine, store, "123")
+        jobs.configure(ConfigInput(version="1"))
+        for key in ("one", "two"):
+            jobs.create(request(key))
+            await asyncio.gather(*list(jobs.tasks.values()))
+        assert engine.calls == 2
+        await jobs.close()
+        store.close()
+    asyncio.run(run())
+
+
 def test_ready_idempotency_does_not_resurrect_released_delivery(tmp_path: Path) -> None:
     async def run() -> None:
         store = Store(tmp_path)
@@ -343,14 +372,8 @@ def test_running_batch_keeps_early_result_files_leased(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-def test_first_short_and_canonical_requests_share_preparation(tmp_path: Path) -> None:
+def test_short_url_alias_is_learned_only_after_original_parse(tmp_path: Path) -> None:
     class AliasEngine(FakeEngine):
-        identities = 0
-
-        async def cache_identity(self, url: str, config: dict) -> str:
-            self.identities += 1
-            return "https://youtube.com/watch?v=x"
-
         async def prepare(self, url: str, **kwargs: Any) -> dict[str, Any]:
             result = await super().prepare(url, **kwargs)
             result["canonicalUrl"] = "https://youtube.com/watch?v=x"
@@ -359,23 +382,18 @@ def test_first_short_and_canonical_requests_share_preparation(tmp_path: Path) ->
     async def run() -> None:
         store = Store(tmp_path)
         engine = AliasEngine()
-        engine.gate.clear()
         jobs = Jobs(engine, store, "123")
         jobs.configure(ConfigInput(version="1"))
         short = request("short").model_copy(update={"text": "https://youtu.be/x"})
         first = jobs.create(short)
+        await asyncio.gather(*list(jobs.tasks.values()))
         second = jobs.create(request("canonical"))
-        await engine.started.wait()
-        await asyncio.sleep(0)
-        engine.gate.set()
         await asyncio.gather(*list(jobs.tasks.values()))
         assert engine.calls == 1
         assert store.job(first["id"])["status"] == "ready"
         assert store.job(second["id"])["status"] == "ready"
-        identities = engine.identities
         jobs.create(short.model_copy(update={"idempotencyKey": "short-again"}))
         await asyncio.gather(*list(jobs.tasks.values()))
-        assert engine.identities == identities
         assert engine.calls == 1
         await jobs.close()
         store.close()

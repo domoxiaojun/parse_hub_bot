@@ -16,6 +16,7 @@ class WorkerSettings(BaseSettings):
     worker_host: str = "127.0.0.1"
     worker_allow_container_bind: bool = False
     worker_port: int = Field(default=8080, ge=1, le=65535)
+    worker_log_level: str = "INFO"
     data_path: Path = Path("data")
     download_dir: Path = Path("downloads")
     database_url: str = "sqlite+aiosqlite:///data/db/database.db"
@@ -59,3 +60,11 @@ class WorkerSettings(BaseSettings):
         if len(value.get_secret_value()) < 32:
             raise ValueError("Worker service key requires at least 32 characters")
         return value
+
+    @field_validator("worker_log_level", mode="before")
+    @classmethod
+    def log_level(cls, value: object) -> str:
+        level = str(value).upper()
+        if level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+            raise ValueError("Worker log level must be DEBUG, INFO, WARNING, or ERROR")
+        return level

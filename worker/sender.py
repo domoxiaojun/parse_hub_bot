@@ -11,7 +11,7 @@ from pyrogram.errors import FloodWait, MessageNotModified, RPCError, SlowmodeWai
 from worker.config import WorkerSettings
 from worker.models import InlineDelivery, MessageDelivery
 from worker.reading_delivery import prepare_reading_frame
-from worker.rich_delivery import build_frames, evidence_for
+from worker.rich_delivery import LivePhotoFrame, bounded, build_frames, evidence_for
 from worker.sender_runtime import SenderRuntime
 from worker.store import Store
 
@@ -86,15 +86,24 @@ class TelegramSender:
                 for attempt in range(3):
                     try:
                         if isinstance(target, MessageDelivery):
-                            response = await self.client.send_rich_message(
-                                chat_id=int(target.chatId), rich_message=frame.payload,
-                                reply_parameters=types.ReplyParameters(message_id=previous_message_id)
-                                if previous_message_id else None,
-                                message_thread_id=target.messageThreadId,
-                            )
+                            reply = (types.ReplyParameters(message_id=previous_message_id)
+                                     if previous_message_id else None)
+                            if isinstance(frame, LivePhotoFrame):
+                                response = await self.client.send_live_photo(
+                                    chat_id=int(target.chatId), live_photo=frame.video, photo=frame.photo,
+                                    width=frame.width, height=frame.height,
+                                    reply_parameters=reply, message_thread_id=target.messageThreadId,
+                                )
+                            else:
+                                response = await self.client.send_rich_message(
+                                    chat_id=int(target.chatId), rich_message=frame.payload,
+                                    reply_parameters=reply, message_thread_id=target.messageThreadId,
+                                )
                             if not response or not getattr(response, "id", None):
                                 raise OSError("missing_delivery_ack")
                         else:
+                            if isinstance(frame, LivePhotoFrame):
+                                raise ValueError("inline_live_photo_plan")
                             response = await self.client.edit_inline_text(
                                 inline_message_id=target.inlineMessageId, rich_message=frame.payload,
                             )
@@ -124,7 +133,9 @@ class TelegramSender:
                 receipt.update(inFlight=False, completedFrames=index + 1)
                 receipt["mediaCount"] = receipt.get("mediaCount", 0) + frame.media_count
                 job["evidence"] = evidence_for(job["results"], delivered_indices, receipt["mediaCount"])
-                receipt["text"] = (receipt.get("text", "") + "\n\n" + frame.text).strip()
+                receipt["text"] = bounded(
+                    (receipt.get("text", "") + "\n\n" + frame.text).strip(), 80_000,
+                )
                 checkpoint()
             except asyncio.CancelledError:
                 receipt.update(status="unknown" if receipt.get("inFlight") else

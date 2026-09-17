@@ -17,11 +17,9 @@ PAGE_CONTENT_BYTES = 48_000  # Telegraph permits 64 KiB; leave room for navigati
 def page_parts(item: dict[str, Any]) -> list[list[dict[str, Any]]]:
     """Use text nodes so external HTML/Markdown cannot create executable markup."""
     nodes: list[dict[str, Any]] = []
-    author = item.get("author") or {}
-    meta = " · ".join(str(value) for value in (
-        item.get("platform"), author.get("name") if isinstance(author, dict) else author, item.get("publishedAt"),
-    ) if value)
-    for value in (str(item.get("title") or ""), meta, str(item.get("content") or "")):
+    meta = str(item.get("platform") or "")
+    for value in (str(item.get("title") or ""), meta,
+                  str(item.get("plainContent") or item.get("content") or "")):
         for chunk in split_text(value, 2048) if value else []:
             children: list[Any] = []
             for index, line in enumerate(chunk.split("\n")):
@@ -100,10 +98,15 @@ async def prepare_reading_frame(
             compact.append({**item, "title": f"第 {index + 1} 个解析结果", "author": None, "publishedAt": None,
                             "platform": "解析结果", "content": "完整标题和正文请打开阅读版。"
                             + ("文章媒体请在原文查看。" if item.get("media") else ""),
+                            "plainContent": "完整标题和正文请打开阅读版。"
+                            + ("文章媒体请在原文查看。" if item.get("media") else ""),
+                            "markdownContent": None, "contentFormat": "plain",
                             "telegraphUrl": url, "media": []})
     finally:
         await publisher.close()
     frame = build_frames(compact, resolve, inline=True)[0]
+    if not isinstance(frame, RichFrame):
+        raise ValueError("invalid_reading_frame")
     receipt["readingMediaCount"] = media_count
     receipt["mode"] = "reading"
     return frame

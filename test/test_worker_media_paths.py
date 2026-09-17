@@ -60,6 +60,22 @@ def test_raw_filename_unchanged_and_images_use_native_shared_processed(tmp_path)
     assert not any(item.name.isdecimal() for item in processed.iterdir())
 
 
+@pytest.mark.parametrize(("extension", "image_format"), [("heic", "HEIF"), ("avif", "AVIF")])
+def test_modern_image_formats_keep_raw_and_convert_preview_to_jpeg(tmp_path, extension, image_format):
+    source = tmp_path / f"现代图片.{extension}"
+    Image.new("RGB", (32, 16), "red").save(source, format=image_format)
+    processed = tmp_path / "processed"
+
+    raw = run(prepare_file(source, processed, "raw"))
+    preview = run(prepare_file(source, processed, "preview"))
+
+    assert raw[0]["path"] == source and raw[0]["type"] == "document"
+    assert preview[0]["path"] == processed / "现代图片.jpg"
+    assert preview[0]["type"] == "photo" and preview[0]["mimeType"] == "image/jpeg"
+    with Image.open(preview[0]["path"]) as converted:
+        assert converted.format == "JPEG" and converted.size == (32, 16)
+
+
 def test_image_split_reuses_native_segment_layout(tmp_path):
     source = tmp_path / 'tall.png'
     Image.new('RGB', (320, 4000), 'red').save(source)

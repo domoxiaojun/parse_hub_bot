@@ -18,7 +18,12 @@ SETTINGS = {"bot_token": "123:fixture", "api_id": 1, "api_hash": "fixture",
 
 def test_worker_container_bind_requires_explicit_opt_in() -> None:
     with patch.dict("os.environ", {}, clear=True):
-        assert WorkerSettings(**SETTINGS).worker_host == "127.0.0.1"
+        settings = WorkerSettings(**SETTINGS)
+        assert settings.worker_host == "127.0.0.1"
+        assert settings.worker_log_level == "INFO"
+        assert WorkerSettings(**SETTINGS, worker_log_level="debug").worker_log_level == "DEBUG"
+        with pytest.raises(ValidationError):
+            WorkerSettings(**SETTINGS, worker_log_level="TRACE")
         with pytest.raises(ValidationError):
             WorkerSettings(**SETTINGS, worker_host="0.0.0.0")
         assert WorkerSettings(**SETTINGS, worker_host="0.0.0.0", worker_allow_container_bind=True)
@@ -64,7 +69,7 @@ def test_healthcheck_accepts_waiting_for_config_but_rejects_wrong_bot() -> None:
         def open(self, request, timeout):
             assert request.full_url == "http://127.0.0.1:8080/api/v1/health"
             assert request.get_header("Authorization") == "Bearer fixture-service"
-            return io.BytesIO(json.dumps({"protocolVersion": 2, "botId": self.bot_id, "ready": False}).encode())
+            return io.BytesIO(json.dumps({"protocolVersion": 3, "botId": self.bot_id, "ready": False}).encode())
 
     with patch.dict("os.environ", {"BOT_TOKEN": "123:fixture", "WORKER_SERVICE_KEY": "fixture-service"}, clear=True):
         with patch("worker.healthcheck.build_opener", return_value=Opener("123")):

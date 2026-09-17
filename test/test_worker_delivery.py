@@ -17,16 +17,27 @@ from worker.config import WorkerSettings
 from worker.jobs import Jobs
 from worker.models import DeliveryTarget, JobInput, MessageDelivery
 from worker.reading_delivery import page_parts, prepare_reading_frame
-from worker.rich_delivery import blocks_size, build_frames, rich_text, split_text
+from worker.rich_delivery import (
+    LivePhotoFrame,
+    RichFrame,
+    block_count,
+    blocks_size,
+    build_frames,
+    rich_blocks_text,
+    rich_text,
+    split_text,
+)
 from worker.sender import TelegramSender, create_sender_client
 from worker.store import Store
 
 
 def result(count=1, **overrides):
+    content = str(overrides.get("content", "<script>不要执行</script>" * 25))
     return {"platform": "xhs", "canonicalUrl": "https://www.xiaohongshu.com/explore/1",
             "sourceUrl": "https://www.xiaohongshu.com/explore/1", "title": "山间散步",
-            "content": "<script>不要执行</script>" * 25, "access": "public", "author": {"name": "作者"},
-            "contentType": "post", "contentFormat": "markdown", "mediaFailureCount": 0,
+            "content": content, "plainContent": str(overrides.get("plainContent", content)),
+            "resultType": "image", "access": "public",
+            "contentType": "post", "contentFormat": "plain", "mediaFailureCount": 0,
             "media": [{"mediaId": f"{i:032x}", "type": "photo", "sizeBytes": 5} for i in range(count)],
             "leaseId": "lease", **overrides}
 
@@ -45,27 +56,87 @@ def job(items=None):
 def test_rich_layout_literal_content_and_footer():
     frames = build_frames([result()], lambda *_: Path("photo.jpg"))
     blocks = frames[0].payload.blocks
-    assert isinstance(blocks[0], types.InputRichBlockParagraph)
-    assert isinstance(blocks[0].text, types.RichTextBold)
-    assert isinstance(blocks[1], types.InputRichBlockFooter) and "小红书 · 作者" in blocks[1].text
-    assert isinstance(blocks[2], types.InputRichBlockParagraph)
-    assert "<script>" in blocks[2].text  # Literal RichText, not HTML/Markdown source.
-    assert isinstance(blocks[3], types.InputRichBlockPhoto)
-    assert isinstance(blocks[-1].text[0], types.RichTextUrl)
-    assert blocks[-1].text[0].url == result()["canonicalUrl"]
+    assert isinstance(blocks[0], types.InputRichBlockSectionHeading)
+    assert blocks[0].text == "山间散步" and blocks[0].size == 3
+    assert isinstance(blocks[1], types.InputRichBlockParagraph)
+    assert "<script>" in blocks[1].text  # Literal RichText, not HTML/Markdown source.
+    assert isinstance(blocks[2], types.InputRichBlockPhoto)
+    assert blocks[-1].text[0] == "小红书"  # Platform badge sits beside the source link.
+    assert isinstance(blocks[-1].text[2], types.RichTextUrl)
+    assert blocks[-1].text[2].url == result()["canonicalUrl"]
     assert frames[0].payload.markdown is None and frames[0].payload.html is None
+
+
+def test_missing_title_does_not_duplicate_platform_label():
+    blocks = build_frames([
+        result(platform="twitter", title="", content="正文", media=[]),
+    ], lambda *_: Path("unused"))[0].payload.blocks
+
+    visible_text = [rich_text(getattr(block, "text", "")) for block in blocks]
+    assert visible_text == ["正文", "X  ·  查看原文"]
+
+
+def test_source_only_result_always_builds_and_sends_one_frame():
+    empty = result(0, title="", content="", plainContent="")
+    frames = build_frames([empty], lambda *_: Path("unused"))
+    assert len(frames) == 1
+    assert isinstance(frames[0], RichFrame)
+    assert rich_blocks_text(frames[0].payload.blocks or []) == "小红书  ·  查看原文"
+
+    async def run():
+        client = SimpleNamespace(send_rich_message=AsyncMock(return_value=SimpleNamespace(id=21)))
+        state = job([empty])
+        await TelegramSender(client).deliver(state, target(), None, lambda: None)
+        assert state["delivery"]["status"] == "sent"
+        assert state["delivery"]["messageIds"] == [21]
+    asyncio.run(run())
 
 
 def test_media_mapping_order_metadata_and_archive():
     media = [{"mediaId": str(i), "type": kind, "filename": "media.tar.gz" if kind == "document" else "clip.mp4",
               "width": 32.4, "height": 16, "durationSeconds": 1.1, "pairedMediaId": "pair"}
-             for i, kind in enumerate(["photo", "video", "animation", "audio", "document"])]
+             for i, kind in enumerate(["photo", "video", "animation", "audio", "voice", "document"])]
     blocks = build_frames([result(media=media, content="短正文")], lambda *_: Path("media"))[0].payload.blocks
-    assert [type(block).__name__ for block in blocks[3:-1]] == [
+    assert [type(block).__name__ for block in blocks[2:-1]] == [
         "InputRichBlockPhoto", "InputRichBlockVideo", "InputRichBlockAnimation", "InputRichBlockAudio",
-        "InputRichBlockDocument"]
-    assert blocks[4].video.duration == 2 and blocks[4].video.width == 32
+        "InputRichBlockVoiceNote", "InputRichBlockDocument"]
+    assert blocks[3].video.duration == 2 and blocks[3].video.width == 32
     assert blocks[-2].document.file_name == "media.tar.gz"
+
+
+def test_native_live_photo_is_a_distinct_message_frame_and_inline_degrades_explicitly():
+    live_media = [
+        {"mediaId": "photo", "videoMediaId": "video", "type": "live_photo",
+         "videoFilename": "live.mp4", "width": 1080, "height": 1440, "durationSeconds": 3},
+        {"mediaId": "still", "type": "photo"},
+    ]
+    frames = build_frames(
+        [result(media=live_media, content="正文")], lambda _, media_id: Path(f"{media_id}.bin"),
+    )
+    live = next(frame for frame in frames if isinstance(frame, LivePhotoFrame))
+    assert live.photo == Path("photo.bin") and live.video == Path("video.bin")
+    assert live.width == 1080 and live.height == 1440
+    rich = [frame for frame in frames if isinstance(frame, RichFrame)]
+    assert any(isinstance(block, types.InputRichBlockPhoto)
+               for frame in rich for block in frame.payload.blocks or [])
+
+    inline = build_frames(
+        [result(media=live_media, content="正文")], lambda _, media_id: Path(f"{media_id}.bin"), inline=True,
+    )[0]
+    assert isinstance(inline, RichFrame)
+    assert not any(isinstance(getattr(block, "photo", None), types.InputMediaLivePhoto)
+                   for block in inline.payload.blocks or [])
+    assert any(isinstance(block, types.InputRichBlockVideo)
+               and rich_text(getattr(block.caption, "text", "")) == "实况视频"
+               for block in inline.payload.blocks or [])
+    with pytest.raises(ValueError, match="inline_media_limit"):
+        build_frames([result(media=[live_media[0]] * 26)], lambda _, media_id: Path(media_id), inline=True)
+
+
+def test_large_photo_gallery_uses_slideshow():
+    blocks = build_frames([result(5, content="正文")], lambda _, media_id: Path(media_id))[0].payload.blocks
+    slideshow = next(block for block in blocks if isinstance(block, types.InputRichBlockSlideshow))
+    assert len(slideshow.blocks) == 5
 
 
 def test_splitting_keeps_order_and_inline_does_not_drop_media():
@@ -106,6 +177,29 @@ def test_sender_acknowledges_target_and_commits_before_return(surface):
             assert client.edit_inline_text.call_args.kwargs["inline_message_id"] == "opaque_id"
             assert state["delivery"]["confirmed"] is True
             client.send_rich_message.assert_not_called()
+    asyncio.run(run())
+
+
+def test_message_surface_sends_native_live_photo_and_chains_receipts():
+    async def run():
+        client = SimpleNamespace(
+            send_rich_message=AsyncMock(side_effect=[SimpleNamespace(id=21), SimpleNamespace(id=23)]),
+            send_live_photo=AsyncMock(return_value=SimpleNamespace(id=22)),
+        )
+        live = {
+            'type': 'live_photo', 'mediaId': 'a' * 32, 'videoMediaId': 'b' * 32,
+            'width': 1080, 'height': 1440, 'durationSeconds': 3,
+        }
+        state = job([result(media=[live], content='正文')])
+        store = SimpleNamespace(media_file=lambda _lease, media_id: (Path(media_id), 'application/octet-stream', 5))
+        await TelegramSender(client).deliver(state, target(), store, lambda: None)
+
+        assert state['delivery']['status'] == 'sent'
+        assert state['delivery']['messageIds'] == [21, 22, 23]
+        call = client.send_live_photo.call_args.kwargs
+        assert call['photo'] == Path('a' * 32) and call['live_photo'] == Path('b' * 32)
+        assert call['reply_parameters'].message_id == 21
+        assert client.send_rich_message.call_args_list[1].kwargs['reply_parameters'].message_id == 22
     asyncio.run(run())
 
 
@@ -193,22 +287,54 @@ def test_rich_text_serializes_as_plain_nodes_not_source_markup():
         from pyrogram import raw
         frame = build_frames([result(0, content="<b>literal</b>")], lambda *_: Path("unused"))[0]
         serialized = await frame.payload.write(client=SimpleNamespace())
-        assert isinstance(serialized.blocks[0], raw.types.PageBlockParagraph)
-        assert isinstance(serialized.blocks[0].text, raw.types.TextBold)
-        assert isinstance(serialized.blocks[0].text.text, raw.types.TextPlain)
-        assert serialized.blocks[0].text.text.text == "山间散步"
-        assert isinstance(serialized.blocks[2].text, raw.types.TextPlain)
-        assert serialized.blocks[2].text.text == "<b>literal</b>"
+        assert isinstance(serialized.blocks[0], raw.types.PageBlockHeading3)
+        assert isinstance(serialized.blocks[0].text, raw.types.TextPlain)
+        assert serialized.blocks[0].text.text == "山间散步"
+        assert isinstance(serialized.blocks[1].text, raw.types.TextPlain)
+        assert serialized.blocks[1].text.text == "<b>literal</b>"
     asyncio.run(run())
+
+
+def test_parsehub_richtext_uses_source_markdown_without_invented_metadata():
+    item = result(
+        0,
+        resultType="richtext",
+        contentType="article",
+        contentFormat="markdown",
+        title="<标题>",
+        plainContent="正文 链接",
+        markdownContent="## 正文\n\n[链接](https://example.com)",
+        content="## 正文\n\n[链接](https://example.com)",
+    )
+    frame = build_frames([item], lambda *_: Path("unused"))[0]
+    assert isinstance(frame, RichFrame)
+    assert frame.payload.blocks is None
+    assert frame.payload.markdown is not None
+    assert "# &lt;标题&gt;" in frame.payload.markdown
+    assert item["markdownContent"] in frame.payload.markdown
+    assert "<footer>小红书" in frame.payload.markdown
+    assert frame.text == "<标题>\n正文 链接\nhttps://www.xiaohongshu.com/explore/1"
+    inline = build_frames([item], lambda *_: Path("unused"), inline=True)[0]
+    assert isinstance(inline, RichFrame) and inline.payload.markdown == frame.payload.markdown
 
 
 def test_long_content_is_complete_and_utf8_safe():
     content = "开头\n" + "中间内容🙂" * 5000 + "\n结尾标记"
     frames = build_frames([result(0, content=content)], lambda *_: Path("unused"))
-    body = "".join(block.text for frame in frames for block in frame.payload.blocks
-                  if isinstance(block, types.InputRichBlockParagraph) and isinstance(block.text, str))
+
+    def paragraphs(blocks: list[object]) -> list[str]:
+        output = []
+        for block in blocks:
+            if isinstance(block, types.InputRichBlockParagraph) and isinstance(block.text, str):
+                output.append(block.text)
+            output.extend(paragraphs(getattr(block, "blocks", []) or []))
+        return output
+
+    body = "".join(text for frame in frames for text in paragraphs(frame.payload.blocks))
     assert len(frames) > 1
     assert body == content
+    assert any(isinstance(block, types.InputRichBlockDetails)
+               for frame in frames for block in frame.payload.blocks)
     assert all(blocks_size(frame.payload.blocks) <= 32768 for frame in frames)
 
 
@@ -219,14 +345,13 @@ def test_split_preserves_every_character(source):
     assert all(0 < len(chunk.encode()) <= 100 for chunk in chunks)
 
 
-def test_long_title_and_metadata_fit_the_whole_frame_budget():
+def test_long_title_and_content_fit_the_whole_frame_budget():
     title = "标题🙂" * 9000
-    author = "作者" * 10000
     content = "正文尾部" * 2000
-    frames = build_frames([result(0, title=title, author={"name": author}, content=content)],
+    frames = build_frames([result(0, title=title, content=content)],
                           lambda *_: Path("unused"))
-    titles = [block.text.text for frame in frames for block in frame.payload.blocks
-              if isinstance(getattr(block, "text", None), types.RichTextBold)]
+    titles = [block.text for frame in frames for block in frame.payload.blocks
+              if isinstance(block, types.InputRichBlockSectionHeading)]
     assert "".join(titles) == title
     assert all(blocks_size(frame.payload.blocks) <= 32768 for frame in frames)
     assert sum(bool(frame.completed_result_indices) for frame in frames) == 1
@@ -237,7 +362,7 @@ def test_multiple_results_keep_complete_text_and_source(surface):
     items = [result(0, title=f"标题-{i}", content=f"开头-{i}\n" + "中文🙂text" * 600 + f"\n末尾-{i}",
                     canonicalUrl=f"https://example.com/{i}") for i in range(2)]
     frames = build_frames(items, lambda *_: Path("unused"), inline=surface != "message")
-    text = "".join(rich_text(getattr(block, "text", "")) for frame in frames for block in frame.payload.blocks)
+    text = "".join(rich_blocks_text(frame.payload.blocks) for frame in frames)
     for item in items:
         assert item["title"] in text and item["content"] in text
         assert any(item["canonicalUrl"] in frame.text for frame in frames)
@@ -245,21 +370,23 @@ def test_multiple_results_keep_complete_text_and_source(surface):
 
 
 def test_pairs_and_media_order_survive_batch_boundary():
-    item = result(101, content="正文")
-    item["media"][49]["pairedMediaId"] = "live"
-    item["media"][50]["pairedMediaId"] = "live"
+    item = result(100, content="正文")
+    item["media"][49] = {
+        "type": "live_photo", "mediaId": "live-photo", "videoMediaId": "live-video",
+        "width": 1080, "height": 1440, "durationSeconds": 3,
+    }
     frames = build_frames([item], lambda _, mid: Path(mid))
-    ids = [[str(block.photo.media) for block in frame.payload.blocks
-            if isinstance(block, types.InputRichBlockPhoto)] for frame in frames]
-    assert [mid for group in ids for mid in group] == [m["mediaId"] for m in item["media"]]
-    assert all(len(group) <= 50 for group in ids)
-    assert any(item["media"][49]["mediaId"] in group and item["media"][50]["mediaId"] in group for group in ids)
+    live = [frame for frame in frames if isinstance(frame, LivePhotoFrame)]
+    assert len(live) == 1
+    assert live[0].photo == Path("live-photo") and live[0].video == Path("live-video")
+    assert sum(frame.media_count for frame in frames) == 100
+    assert all(frame.media_count <= 50 for frame in frames)
 
 
 def test_block_limit_accounts_for_frame_headers_and_footers(monkeypatch):
     monkeypatch.setattr("worker.rich_delivery.MAX_RICH_BLOCKS", 6)
     frames = build_frames([result(12)], lambda *_: Path("photo.jpg"))
-    assert all(len(frame.payload.blocks) <= 6 for frame in frames)
+    assert all(block_count(frame.payload.blocks) <= 6 for frame in frames)
     assert sum(frame.media_count for frame in frames) == 12
 
 
@@ -283,6 +410,16 @@ def test_sender_chains_replies_and_does_not_claim_unsent_body():
         assert state["evidence"]["sources"] == []
         assert state["delivery"]["completedFrames"] == 1
         assert state["delivery"]["totalFrames"] > 1
+    asyncio.run(run())
+
+
+def test_delivery_receipt_text_is_bounded_for_client_contract():
+    async def run():
+        client = SimpleNamespace(send_rich_message=AsyncMock(return_value=SimpleNamespace(id=21)))
+        state = job([result(0, content="正文" * 60000)])
+        await TelegramSender(client).deliver(state, target(), None, lambda: None)
+        assert len(state["delivery"]["text"].encode()) <= 80_000
+        assert state["delivery"]["text"].endswith("…")
     asyncio.run(run())
 
 
@@ -380,7 +517,8 @@ def test_article_reading_branch_never_uploads_local_media():
         assert state["delivery"]["status"] == "sent"
         assert state["delivery"]["readingMediaCount"] == 51
         assert state["delivery"]["mediaCount"] == 0
-        assert all(isinstance(b, types.InputRichBlockParagraph | types.InputRichBlockFooter)
+        assert all(isinstance(b, types.InputRichBlockParagraph | types.InputRichBlockFooter
+                                | types.InputRichBlockSectionHeading)
                    for b in client.edit_inline_text.call_args.kwargs["rich_message"].blocks)
     asyncio.run(run())
 

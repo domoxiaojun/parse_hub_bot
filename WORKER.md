@@ -23,6 +23,12 @@ ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv 
 
 Worker复用ParseHub全部平台注册能力，负责解析、下载、原文件/打包、媒体转换、固定48小时文件缓存和受认证的媒体文件读取，不监听用户消息。gptbot继续作为唯一update接收方。命中直出的解析轮由Worker通过独立no-updates客户端上传并发送RichMessage，返回回执和解析证据；该轮不调用LLM。未携带delivery的旧工具请求仍使用文件交接。
 
+生产解析入口直接绑定上游`services.parser.ParseService.parse()`。Worker不在解析前调用`get_raw_url`、不清洗或
+替换提交链接，也不在上游三次重试外再套重试；只有上游成功返回`raw_url`后才将它登记为缓存别名。
+Worker定制范围从解析结果适配、Telegram媒体准备、消息组装和gptbot HTTP协议开始。源结果严格保留
+ParseHub的`video/image/multimedia/richtext`类型；普通正文标记为plain，只有`markdown_content`标记为
+markdown。ParseHub没有作者、发布时间或公开性证明字段，Worker不会臆造这些元数据。
+
 ## 原配置与路径
 
 Worker直接沿用原项目布局，无需复制成第二套配置：
@@ -46,9 +52,14 @@ WORKER_SERVICE_KEY=<至少32字符且与gptbot服务密钥相同>
 WORKER_HOST=127.0.0.1
 WORKER_PORT=8080
 WORKER_CACHE_MAX_BYTES=10737418240
+WORKER_LOG_LEVEL=INFO
 ```
 
 BOT_TOKEN、API_ID、API_HASH、BOT_PROXY、DATA_PATH、DOWNLOAD_DIR、DATABASE_URL继续用原值。本轮Worker要求持久SQLite DATABASE_URL，不会安装或切换数据库服务器。
+
+Worker新增的结构化诊断行不含URL、Cookie、代理凭据和异常原文，例如`reason=login_required`。
+需要查看安全裁剪后的异常链和源码位置时，可临时设置`WORKER_LOG_LEVEL=DEBUG`并重启Worker；DEBUG只作用于
+`parsehub.worker`，不会打开依赖库的请求跟踪。诊断完成后恢复`INFO`。
 
 ## 原生启动与Compose
 
@@ -98,7 +109,14 @@ gptbot仅保存PARSEHUB_WORKER_URL、PARSEHUB_WORKER_SECRET、PARSEHUB_WORKER_AC
 
 ## 直出卡片与确认
 
-排版使用中等字号标题、平台/作者/时间、小段正文或可折叠长正文、媒体主体和底部“查看原文”。外部正文作为literal RichText，不解释为HTML/Markdown结构。原始文件和归档以文档块呈现；已有阅读版链接时可展示。普通消息超过50项媒体拆分发送，Guest/inline合并编辑一条，超出其单条限制明确失败而不另行公开补发。
+Worker以Kurigram 2.2.26（Bot API 10.3）作为Rich Message最低版本。排版使用中等字号Section Heading、
+平台/作者/时间、小段正文或可折叠Details长正文、媒体主体和底部“查看原文”。外部正文作为literal
+RichText，不解释为HTML/Markdown结构。预览媒体按来源语义映射：单图为Photo，2至4张连续图片为Collage，
+5张以上为Slideshow；符合10秒和10 MiB限制的Live Photo在普通消息中使用原生`sendLivePhoto`，在
+Guest/inline中明确降级为静态照片和“实况视频”两个Rich Block；视频、GIF、音频、语音和文件分别使用
+对应Rich Block。HEIC、HEIF、AVIF和WebP会转换为Telegram照片可接受的JPEG；原始文件和归档仍以
+Document呈现。没有来源语义的位置、表格、公式或思考内容不会被臆造。已有阅读版链接时可展示。普通消息超过
+50项媒体拆分发送，Guest/inline合并编辑一条，超出其单条限制明确失败而不另行公开补发。
 
 返回delivery状态pending/sending/sent/partial/failed/cancelled/unknown；messageIds仅来自Telegram确认，inline编辑记录confirmed。全部解析失败也可以发出受控错误卡，但job.status为failed、delivery为partial，不伪装解析成功。证据仅包含已确认交付的来源，mediaCount只统计已交付frame。网络异常原文不进入用户结果。
 

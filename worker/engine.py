@@ -7,12 +7,13 @@ import json
 import logging
 import random
 import re
+import traceback
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from parsehub import ParseHub
 from parsehub.utils.helpers import match_url
 
 from utils.helpers import pack_dir_to_tar_gz
@@ -23,10 +24,19 @@ Progress = Callable[[str], Awaitable[None]]
 logger = logging.getLogger('parsehub.worker')
 
 
+@dataclass(frozen=True)
+class _UpstreamFailure:
+    http_status: int | None
+    reason: str
+
+
 class ParseHubEngine:
-    def __init__(self, root: Path, parser: Any = None):
+    def __init__(
+        self, root: Path, parser: Any, native_parse: Callable[[str], Awaitable[Any]],
+    ):
         self.root = root
-        self.parser = parser or ParseHub()
+        self.parser = parser
+        self.native_parse = native_parse
         self.config: dict = {}
 
     def configure(self, config: dict) -> None:
@@ -60,28 +70,6 @@ class ParseHubEngine:
             raise EngineError('unsupported_url', 'identify')
         return str(platform.id)
 
-    async def cache_identity(self, url: str, config: dict | None = None) -> str:
-        """Use the original bot's get_raw_url retries; never replace the parse input."""
-        platform = self.identify(url)
-        snapshot = self.config if config is None else config
-        settings = snapshot.get('platforms', {}).get(platform, {})
-        defaults = snapshot.get('defaults', {})
-        proxies = settings.get('parser_proxies', defaults.get('parser_proxies', []))
-        for attempt in range(1, 4):
-            try:
-                resolved = str(await self.parser.get_raw_url(url, proxy=self._choose(proxies), clean_all=False))
-                if self.identify(resolved) != platform:
-                    raise EngineError('unsupported_url', 'redirect')
-                provider = self.parser.get_parser(resolved)
-                if provider is None:
-                    raise EngineError('unsupported_url', 'redirect')
-                return str(provider._clean_params(resolved, provider.__after_clean_parameters__))
-            except Exception as exc:
-                self._log_failure('redirect', platform, attempt, exc)
-                if attempt == 3:
-                    raise EngineError('upstream_http', 'redirect') from exc
-        raise AssertionError('unreachable')
-
     async def prepare(
         self, url: str, mode: str = 'auto', output_mode: str = 'preview', config: dict | None = None,
         progress: Progress | None = None, directory: Path | None = None, refresh: bool = False,
@@ -105,17 +93,26 @@ class ParseHubEngine:
         await report('parse')
         parsed, used_cookie = await self._parse(url, platform, proxies, cookies)
         canonical = getattr(parsed, 'raw_url', '') or url
+        result_type = getattr(getattr(parsed, 'type', None), 'value', 'unknown')
+        plain_content = str(getattr(parsed, 'content', '') or '')
+        markdown_content = getattr(parsed, 'markdown_content', None)
+        content = str(markdown_content) if isinstance(markdown_content, str) else plain_content
         result: dict = {
             'platform': platform, 'sourceUrl': url, 'canonicalUrl': canonical,
             'title': getattr(parsed, 'title', ''),
-            'content': getattr(parsed, 'markdown_content', None) or getattr(parsed, 'content', ''),
-            'contentType': 'article' if getattr(getattr(parsed, 'type', None), 'value', '') == 'richtext' else 'post',
+            'resultType': result_type,
+            'plainContent': plain_content,
+            'content': content,
+            'contentType': 'article' if result_type == 'richtext' else 'post',
             # Legacy API access=public means deliverable, not an independent visibility attestation.
-            'contentFormat': 'markdown', 'access': 'public', 'truncated': False,
+            'contentFormat': 'markdown' if isinstance(markdown_content, str) else 'plain',
+            'access': 'public', 'truncated': False,
             'externalPublicationAllowed': not used_cookie and getattr(parsed, 'access', None)
             not in ('private', 'restricted', 'paid', 'unknown'),
             'media': [], 'mediaFailureCount': 0, 'mediaFailures': [], '_files': [], '_mediaFiles': {},
         }
+        if isinstance(markdown_content, str):
+            result['markdownContent'] = markdown_content
 
         def media_failed(stage: str, index: int, error: Exception) -> None:
             code = {'download': 'download_failed', 'convert': 'media_processing_failed',
@@ -132,11 +129,7 @@ class ParseHubEngine:
                 rpc_code = 'none'
             logger.warning('event=media.failed platform=%s stage=%s index=%s code=%s error_type=%s rpc_code=%s',
                            platform, stage, index, code, type(error).__name__, rpc_code)
-        for source, target in (('author', 'author'), ('published_at', 'publishedAt')):
-            value = getattr(parsed, source, None)
-            if isinstance(value, str | dict):
-                result[target] = {'name': value} if source == 'author' and isinstance(value, str) else value
-        if mode == 'read_only':
+        if mode == 'read_only' or result_type == 'richtext':
             return result
         download_root = (directory or self.root).resolve()
         refs = getattr(parsed, 'media', None)
@@ -145,7 +138,7 @@ class ParseHubEngine:
             return result
         result['_expectedMedia'] = len(refs)
         await report('download')
-        downloaded: list[tuple[Path, bool, str | None]] = []
+        downloaded: list[tuple[Path, bool, str | None, str | None]] = []
         archive: Path | None = None
         try:
             # Native ParseResult.download allocates name/name_N synchronously before
@@ -179,14 +172,14 @@ class ParseHubEngine:
             files = download.media if isinstance(download.media, list | tuple) else [download.media]
             for index, file in enumerate(files):
                 pair = str(index) if getattr(file, 'video_path', None) else None
-                paths = [Path(file.path)]
+                paths = [(Path(file.path), 'photo' if pair is not None else None)]
                 if getattr(file, 'video_path', None):
-                    paths.append(Path(file.video_path))
-                for path in paths:
+                    paths.append((Path(file.video_path), 'video'))
+                for path, pair_role in paths:
                     if not path.resolve().is_relative_to(directory) or path.is_symlink():
                         raise EngineError('media_processing_failed', 'download')
                     animation = type(refs[index]).__name__ == 'AniRef' if index < len(refs) else False
-                    downloaded.append((path, animation, pair))
+                    downloaded.append((path, animation, pair, pair_role))
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -222,12 +215,13 @@ class ParseHubEngine:
             except Exception as error:
                 media_failed('convert', 0, error)
         else:
-            for index, (path, animation, pair) in enumerate(downloaded):
+            for index, (path, animation, pair, pair_role) in enumerate(downloaded):
                 try:
                     items = await prepare_file(path, directory / 'processed', output_mode, animation)
                     for item in items:
                         if pair is not None:
                             item['pairedMediaId'] = pair
+                            item['pairedMediaRole'] = pair_role
                         prepared.append(item)
                 except asyncio.CancelledError:
                     raise
@@ -235,16 +229,63 @@ class ParseHubEngine:
                     media_failed('convert', index, error)
         # Only publish prepared local files. The caller owns Telegram uploading,
         # sending and delivery receipts; no cross-process file_id construction.
-        for item in prepared:
+        def publish_media(item: dict[str, Any]) -> dict[str, Any]:
             path = Path(item['path']).resolve()
             if (not path.is_relative_to(directory.resolve()) and path != archive) or not path.is_file():
                 raise EngineError('media_processing_failed', 'convert')
             media_id = uuid.uuid4().hex
             descriptor = {k: v for k, v in item.items() if k not in ('path', 'thumbnailPath')}
             descriptor.update(mediaId=media_id, sizeBytes=path.stat().st_size)
-            result['media'].append(descriptor)
             result['_mediaFiles'][media_id] = {'path': str(path), 'sizeBytes': path.stat().st_size,
                                               'mimeType': item['mimeType']}
+            return descriptor
+
+        # Live Photo is one logical source item. Keep it atomic in the public
+        # contract instead of asking every renderer to reconstruct a pair.
+        cursor = 0
+        while cursor < len(prepared):
+            item = prepared[cursor]
+            pair = item.get('pairedMediaId')
+            end = cursor + 1
+            while pair is not None and end < len(prepared) and prepared[end].get('pairedMediaId') == pair:
+                end += 1
+            group = prepared[cursor:end]
+            photos = [entry for entry in group if entry.get('type') == 'photo'
+                      and entry.get('pairedMediaRole') == 'photo']
+            videos = [entry for entry in group if entry.get('type') == 'video'
+                      and entry.get('pairedMediaRole') == 'video']
+            if pair is not None and len(group) == 2 and len(photos) == 1 and len(videos) == 1:
+                photo = publish_media(photos[0])
+                video = publish_media(videos[0])
+                native = video['sizeBytes'] <= 10 * 1024 * 1024 and int(video.get('durationSeconds') or 0) <= 10
+                if native:
+                    result['media'].append({
+                        'type': 'live_photo',
+                        'mediaId': photo['mediaId'],
+                        'videoMediaId': video['mediaId'],
+                        'sizeBytes': photo['sizeBytes'],
+                        'videoSizeBytes': video['sizeBytes'],
+                        'mimeType': photo.get('mimeType'),
+                        'videoMimeType': video.get('mimeType'),
+                        'filename': photo.get('filename'),
+                        'videoFilename': video.get('filename'),
+                        'width': photo.get('width') or video.get('width'),
+                        'height': photo.get('height') or video.get('height'),
+                        'durationSeconds': video.get('durationSeconds'),
+                    })
+                else:
+                    photo.pop('pairedMediaId', None)
+                    photo.pop('pairedMediaRole', None)
+                    video.pop('pairedMediaId', None)
+                    video.pop('pairedMediaRole', None)
+                    result['media'].extend((photo, video))
+            else:
+                for entry in group:
+                    descriptor = publish_media(entry)
+                    descriptor.pop('pairedMediaId', None)
+                    descriptor.pop('pairedMediaRole', None)
+                    result['media'].append(descriptor)
+            cursor = end
         logger.info('event=media.summary platform=%s expected=%s downloaded=%s prepared=%s available=%s failed=%s',
                     platform, len(refs), len(downloaded), len(prepared),
                     len(result['media']), result['mediaFailureCount'])
@@ -268,38 +309,90 @@ class ParseHubEngine:
             raise EngineError('media_processing_failed', 'metadata')
 
     async def _parse(self, url: str, platform: str, proxies: list[str], cookies: list[str]) -> tuple[Any, bool]:
-        for attempt in range(1, 4):
-            cookie = self._choose(cookies)
-            proxy = self._choose(proxies)
-            try:
-                parsed = await self.parser.parse(url, proxy=proxy, cookie=cookie)
-                return parsed, bool(cookie)
-            except Exception as exc:
-                status = self._log_failure('parse', platform, attempt, exc)
-                if attempt == 3:
-                    raise EngineError('upstream_http' if status else 'upstream_contract') from exc
-        raise AssertionError('unreachable')
+        try:
+            # The upstream ParseService owns platform selection, Cookie/proxy choice
+            # and its original three-attempt retry loop. Worker calls it exactly once.
+            return await self.native_parse(url), bool(cookies)
+        except Exception as exc:
+            failure = self._log_failure(
+                'parse', platform, 3, exc, credential_used=bool(cookies), proxy_used=bool(proxies),
+            )
+            raise EngineError(self._failure_code(failure, bool(cookies))) from exc
+
+    @staticmethod
+    def _failure_code(failure: _UpstreamFailure, credential_used: bool) -> str:
+        if failure.reason == 'login_required':
+            return 'credentials_invalid' if credential_used else 'credentials_required'
+        if failure.reason in {'content_not_found', 'content_missing', 'response_data_missing'}:
+            return 'content_unavailable'
+        return 'upstream_http' if failure.http_status else 'upstream_contract'
 
     @staticmethod
     def _choose(values: list[str]) -> str | None:
         return random.choice(values) if values else None
 
     @staticmethod
-    def _log_failure(stage: str, platform: str, attempt: int, error: Exception) -> int | None:
-        # ParseHub wraps HTTP errors; retain only numeric status, never request URLs or headers.
+    def _error_chain(error: BaseException) -> list[BaseException]:
         seen: set[int] = set()
+        chain: list[BaseException] = []
         cause: BaseException | None = error
-        status = None
         while cause is not None and id(cause) not in seen:
             seen.add(id(cause))
+            chain.append(cause)
+            cause = cause.__cause__ or cause.__context__
+        return chain
+
+    @staticmethod
+    def _failure_reason(chain: list[BaseException], status: int | None) -> str:
+        if status is not None:
+            return 'http_error'
+        messages = [str(item) for item in chain]
+        if any('需要登录' in message or 'login required' in message.lower() for message in messages):
+            return 'login_required'
+        if any('不存在' in message or 'not found' in message.lower() for message in messages):
+            return 'content_not_found'
+        if any('No data found' in message for message in messages):
+            return 'response_data_missing'
+        if any('未获取到内容' in message for message in messages):
+            return 'content_missing'
+        if any(isinstance(item, TimeoutError) or 'Timeout' in type(item).__name__ for item in chain):
+            return 'timeout'
+        if any(isinstance(item, (KeyError, TypeError, ValueError)) for item in chain):
+            return 'response_contract'
+        return 'parse_rejected' if any(type(item).__name__ == 'ParseError' for item in chain) else 'unclassified'
+
+    @staticmethod
+    def _log_failure(
+        stage: str, platform: str, attempt: int, error: Exception, *, credential_used: bool = False,
+        proxy_used: bool = False,
+    ) -> _UpstreamFailure:
+        # ParseHub wraps HTTP errors. Log only stable classifications and source locations,
+        # never exception messages, request URLs, headers, cookies, or proxy credentials.
+        chain = ParseHubEngine._error_chain(error)
+        status = None
+        for cause in chain:
             candidate = getattr(getattr(cause, 'response', None), 'status_code', None)
             if isinstance(candidate, int) and 100 <= candidate <= 599:
                 status = candidate
                 break
-            cause = cause.__cause__ or cause.__context__
-        logger.warning('event=upstream.failed stage=%s platform=%s attempt=%s http_status=%s',
-                       stage, platform, attempt, status or 'none')
-        return status
+        reason = ParseHubEngine._failure_reason(chain, status)
+        logger.warning(
+            'event=upstream.failed stage=%s platform=%s attempt=%s http_status=%s reason=%s '
+            'error_type=%s cause_type=%s credential_used=%s proxy_used=%s',
+            stage, platform, attempt, status or 'none', reason, type(error).__name__, type(chain[-1]).__name__,
+            str(credential_used).lower(), str(proxy_used).lower(),
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            frames = [
+                f'{"/".join(Path(frame.filename).parts[-2:])}:{frame.name}:{frame.lineno}'
+                for item in chain for frame in traceback.extract_tb(item.__traceback__)
+            ]
+            logger.debug(
+                'event=upstream.diagnostic stage=%s platform=%s attempt=%s exception_chain=%s traceback=%s',
+                stage, platform, attempt, '>'.join(type(item).__name__ for item in chain),
+                '>'.join(frames[-12:]) or 'none',
+            )
+        return _UpstreamFailure(status, reason)
 
 
 Engine = ParseHubEngine

@@ -15,18 +15,22 @@ from worker.sender_runtime import SenderRuntime
 from worker.store import Store
 
 
-def configure_logging() -> None:
+def configure_logging(level: str = "INFO") -> None:
     # Shared media helpers import the interactive bot logger, which replaces the
     # root handlers and sets ERROR at import time. Restore Worker logging after
-    # loading the engine so progress and media failures remain visible.
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", force=True)
+    # loading the engine so progress and media failures remain visible. DEBUG is
+    # scoped to our logger so dependency traces cannot disclose request details.
+    root_level = "INFO" if level == "DEBUG" else level
+    logging.basicConfig(level=root_level, format="%(asctime)s %(levelname)s %(name)s %(message)s", force=True)
+    logging.getLogger("parsehub.worker").setLevel(level)
 
 
 async def main() -> None:
     # Import the parsing adapter only after Worker settings have been validated.
     settings = WorkerSettings()  # type: ignore[call-arg]
+    from services.parser import ParseService
     from worker.engine import ParseHubEngine
-    configure_logging()
+    configure_logging(settings.worker_log_level)
 
     sessions = settings.sessions_path
     sessions.mkdir(parents=True, exist_ok=True)
@@ -43,7 +47,8 @@ async def main() -> None:
         store = Store(settings.data_path, settings.worker_cache_max_bytes,
                       database_path=settings.database_path, files_path=settings.download_dir)
         expected_id = settings.bot_token.get_secret_value().split(":", 1)[0]
-        engine = ParseHubEngine(store.files)
+        parse_service = ParseService()
+        engine = ParseHubEngine(store.files, parser=parse_service.parser, native_parse=parse_service.parse)
         client = create_sender_client(settings)
         sender_runtime = SenderRuntime(
             client, expected_id, sessions / f"{settings.worker_sender_session_name}.cooldown.json",

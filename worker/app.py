@@ -14,6 +14,13 @@ from worker.models import JobInput
 from worker.platform_config import ConfigConflict, PlatformConfigFile
 
 
+def public_job(job: dict) -> dict:
+    """Direct delivery callers need the receipt/evidence, never the prepared source body."""
+    if job.get("delivery") is None:
+        return job
+    return {**job, "results": []}
+
+
 def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile | None = None) -> web.Application:
     @web.middleware
     async def authenticated(
@@ -44,14 +51,14 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
     app = web.Application(middlewares=[authenticated], client_max_size=1024 * 1024)
 
     async def health(request: web.Request) -> web.Response:
-        return web.json_response({"protocolVersion": 2, "botId": jobs.bot_id,
+        return web.json_response({"protocolVersion": 3, "botId": jobs.bot_id,
                                   "ready": jobs.config is not None, "version": "0.1.0",
                                   "directDelivery": jobs.sender is not None,
                                   **(jobs.sender.health() if jobs.sender else {"deliveryReady": False}),
                                   "configSource": "platform_config.yaml"})
 
     async def capabilities(request: web.Request) -> web.Response:
-        return web.json_response({**jobs.engine.capabilities(), "protocolVersion": 2,
+        return web.json_response({**jobs.engine.capabilities(), "protocolVersion": 3,
                                   "directDelivery": jobs.sender is not None})
 
     async def read_config(request: web.Request) -> web.Response:
@@ -69,13 +76,13 @@ def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile
 
     async def create_job(request: web.Request) -> web.Response:
         result = jobs.create(JobInput.model_validate(await request.json()))
-        return web.json_response(result, status=202)
+        return web.json_response(public_job(result), status=202)
 
     async def get_job(request: web.Request) -> web.Response:
         job = jobs.store.job(request.match_info["id"])
         if job is None:
             raise web.HTTPNotFound()
-        return web.json_response(job)
+        return web.json_response(public_job(job))
 
     async def cancel_job(request: web.Request) -> web.Response:
         await jobs.cancel(request.match_info["id"])

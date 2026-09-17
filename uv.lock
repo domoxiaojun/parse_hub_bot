@@ -1883,7 +1883,7 @@ requires-dist = [
     { name = "easy-ai18n", specifier = ">=1.2.1" },
     { name = "haishoku", specifier = ">=1.1.8" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
-    { name = "kurigram", specifier = ">=2.2.24" },
+    { name = "kurigram", specifier = ">=2.2.26" },
     { name = "loguru", specifier = ">=0.6.0" },
     { name = "lxml-html-clean", specifier = ">=0.4.1" },
     { name = "markdown", specifier = ">=3.7" },
