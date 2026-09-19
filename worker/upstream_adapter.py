@@ -94,7 +94,7 @@ class OriginalPipelineAdapter:
             skip_media_processing=output_mode in {"raw", "zip"},
             # The shared envelope must contain every final asset, including GIF galleries.
             gif_only_skip_download_count_threshold=0,
-            richtext_skip_download=True,
+            richtext_skip_download=False,
             save_metadata=output_mode == "zip",
             download_dir=directory,
             t=cast(Any, lambda value: value),

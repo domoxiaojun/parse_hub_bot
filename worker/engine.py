@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from parsehub.errors import DownloadError, ParseError, UnknownPlatform
 from parsehub.types import AniFile, ImageFile, LivePhotoFile, VideoFile
 from parsehub.utils.helpers import match_url
 
@@ -415,6 +416,10 @@ class ParseHubEngine:
             return "content_unavailable"
         if failure.reason == "timeout":
             return "upstream_timeout"
+        if failure.reason == "unsupported_url":
+            return "unsupported_url"
+        if failure.reason == "download_error":
+            return "media_failed"
         return "upstream_http" if failure.http_status else "upstream_contract"
 
     @staticmethod
@@ -430,22 +435,30 @@ class ParseHubEngine:
 
     @staticmethod
     def _failure_reason(chain: list[BaseException], status: int | None) -> str:
+        # Prefer stable upstream exception types; message matching is only a fallback
+        # because ParseHub currently does not expose structured reason codes.
         if status is not None:
             return "http_error"
+        if any(isinstance(item, UnknownPlatform) for item in chain):
+            return "unsupported_url"
+        if any(isinstance(item, DownloadError) for item in chain):
+            return "download_error"
+        parse_rejected = any(isinstance(item, ParseError) for item in chain)
         messages = [str(item) for item in chain]
-        if any("需要登录" in message or "login required" in message.lower() for message in messages):
-            return "login_required"
-        if any("不存在" in message or "not found" in message.lower() for message in messages):
-            return "content_not_found"
-        if any("No data found" in message for message in messages):
-            return "response_data_missing"
-        if any("未获取到内容" in message for message in messages):
-            return "content_missing"
+        patterns = (
+            ("login_required", lambda message: "需要登录" in message or "login required" in message.lower()),
+            ("content_not_found", lambda message: "不存在" in message or "not found" in message.lower()),
+            ("response_data_missing", lambda message: "No data found" in message),
+            ("content_missing", lambda message: "未获取到内容" in message),
+        )
+        for reason, matches in patterns:
+            if any(matches(message) for message in messages):
+                return reason
         if any(isinstance(item, TimeoutError) or "Timeout" in type(item).__name__ for item in chain):
             return "timeout"
         if any(isinstance(item, (KeyError, TypeError, ValueError)) for item in chain):
             return "response_contract"
-        return "parse_rejected" if any(type(item).__name__ == "ParseError" for item in chain) else "unclassified"
+        return "parse_rejected" if parse_rejected else "unclassified"
 
     @staticmethod
     def _log_failure(

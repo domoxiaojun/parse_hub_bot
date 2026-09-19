@@ -20,8 +20,14 @@ def pipeline_assets(processed_list: list[ProcessedMedia], source_id: str, *,
         if raw and isinstance(source, LivePhotoFile) and source.video_path:
             paths = [*paths, Path(source.video_path)]
         if isinstance(source, LivePhotoFile) and not raw:
-            if len(paths) != 1 or processed.motion is None:
+            if len(paths) != 1:
                 raise DeliveryError("live_photo_not_prepared")
+            if processed.motion is None:
+                path = paths[0]
+                width, height, _ = resolve_media_info(processed, str(path))
+                assets.append(MediaAsset(asset_key(source_id, len(assets), [path]), "photo", path,
+                                         width=width, height=height, size=path.stat().st_size))
+                continue
             motion = processed.motion
             key = asset_key(source_id, len(assets), [paths[0], motion.path])
             assets.append(MediaAsset(key, "live_photo", motion.path, paths[0], motion.width, motion.height,

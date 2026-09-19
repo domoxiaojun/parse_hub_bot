@@ -2,8 +2,9 @@ import asyncio
 import re
 from dataclasses import replace
 
+from parsehub.types import RichTextParseResult
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import InputRichMessage, Message
 
 from core import bs
 from db import get_session
@@ -16,12 +17,12 @@ from plugins.filters import (
     platform_filter,
     via_me_filter,
 )
-from plugins.helpers import format_label
+from plugins.helpers import build_caption, create_richtext_telegraph, format_label
 from plugins.parse.context import ParseOptions, ParseRequest
 from plugins.parse.reporters import MessageStatusReporter, disable_progress_on_report_forbidden
 from plugins.parse.sender import MessageSender, send_cached, send_media, send_raw, send_zip
 from repo.settings import ParseMode
-from services import ParsePipeline, ParseService, SettingsService, UserService
+from services import CacheEntry, CacheParseResult, ParsePipeline, ParseService, SettingsService, UserService
 from services.cache import parse_cache, persistent_cache
 from utils.helpers import with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
@@ -174,6 +175,7 @@ async def handle_parse(req: ParseRequest) -> bool:
         parse_result=cached_parse_result,
         singleflight=options.singleflight,
         skip_media_processing=options.skip_media_processing,
+        richtext_skip_download=False,
         save_metadata=options.save_metadata,
         t=req.t_,
     ) as pipeline:
@@ -198,6 +200,39 @@ async def handle_parse(req: ParseRequest) -> bool:
 
         parse_result = result.parse_result
         await parse_cache.set(raw_url, parse_result)
+
+        if isinstance(parse_result, RichTextParseResult) and req.mode == ParseMode.PREVIEW:
+            await sender.typing()
+            if req.config.rich_mode:
+                caption = build_caption(parse_result, config=req.config, custom_content=req.custom_content, rich=True)
+                await sender.rich_message(InputRichMessage(markdown=caption))
+                await persistent_cache.set(
+                    raw_url,
+                    CacheEntry(
+                        parse_result=CacheParseResult(
+                            title=parse_result.title, content=parse_result.markdown_content
+                        ),
+                        rich=True,
+                    ),
+                )
+            else:
+                telegraph_url = await create_richtext_telegraph(req.cli, parse_result)
+                caption = build_caption(
+                    parse_result,
+                    telegraph_url,
+                    config=req.config,
+                    custom_content=req.custom_content,
+                )
+                await sender.text_with_preview_above(caption)
+                await persistent_cache.set(
+                    raw_url,
+                    CacheEntry(
+                        parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content),
+                        telegraph_url=telegraph_url,
+                    ),
+                )
+            await reporter.dismiss()
+            return True
 
         if req.mode == ParseMode.RAW:
             return await send_raw(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)

@@ -92,8 +92,12 @@ async def process_media_files(download_result: DownloadResult) -> list[Processed
         motion = None
         if isinstance(media_file, LivePhotoFile):
             if not media_file.video_path:
-                raise ValueError("live_photo_pair_missing")
-            motion = await prepare_motion(Path(media_file.video_path), processed_dir)
+                logger.warning("实况视频缺失，降级为静态图片")
+            else:
+                try:
+                    motion = await prepare_motion(Path(media_file.video_path), processed_dir)
+                except Exception as error:
+                    logger.warning(f"实况视频准备失败，降级为静态图片: {type(error).__name__}")
         processed_list.append(ProcessedMedia(media_file, result.output_paths, result.temp_dir, motion))
     logger.debug(f"媒体处理完成: 处理数={len(processed_list)}")
     return processed_list

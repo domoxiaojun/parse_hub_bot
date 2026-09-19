@@ -1,6 +1,5 @@
 """Final motion-file preparation. No Telegram I/O or send-time transformations."""
 
-import asyncio
 import json
 import math
 from dataclasses import dataclass
@@ -8,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from delivery.models import DeliveryError
+from utils.helpers import run_cmd
 
 
 @dataclass(frozen=True)
@@ -19,20 +19,11 @@ class MotionInfo:
     native_error: str | None
 
 
-async def command(*args: str) -> bytes:
-    process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
-                                                   stderr=asyncio.subprocess.DEVNULL)
+async def command(*args: str) -> str:
     try:
-        async with asyncio.timeout(180):
-            output, _ = await process.communicate()
-    except BaseException:
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-        raise
-    if process.returncode:
-        raise DeliveryError("media_processing_failed")
-    return output
+        return await run_cmd(*args, timeout=180, check=True)
+    except (RuntimeError, TimeoutError) as error:
+        raise DeliveryError("media_processing_failed") from error
 
 
 async def probe_motion(path: Path) -> tuple[dict[str, Any], MotionInfo]:
@@ -60,8 +51,14 @@ async def prepare_motion(path: Path, directory: Path) -> MotionInfo:
     if (stream.get("codec_name") == "h264" and stream.get("pix_fmt") == "yuv420p"
             and path.suffix.lower() == ".mp4" and not needs_size):
         return info
+    if stream.get("codec_name") == "h264" and stream.get("pix_fmt") == "yuv420p" and not needs_size:
+        output = directory / f"{path.stem}_remux.mp4"
+        await command("ffmpeg", "-v", "error", "-i", str(path), "-c", "copy", "-movflags", "+faststart",
+                      "-y", str(output))
+        _, remuxed = await probe_motion(output)
+        return remuxed
     output = directory / f"{path.stem}_h264.mp4"
-    # Budget 8 MiB for video; preserve the entire clip and allow room for audio/container.
+    # Re-encode only when the codec/pixel format or Telegram's native size limit requires it.
     quality = (["-b:v", str(int(8_000_000 * 8 / info.duration)), "-maxrate",
                 str(int(8_000_000 * 8 / info.duration)), "-bufsize", "1000000"]
                if needs_size else ["-crf", "20"])

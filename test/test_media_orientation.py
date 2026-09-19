@@ -23,11 +23,11 @@ def test_oriented_jpeg_is_transposed_before_downscale(tmp_path: Path) -> None:
     output = result.output_paths[0]
 
     with Image.open(output) as image:
-        assert image.size == (1280, 2560)
+        assert image.size == (1500, 3000)
         assert ImageOps.exif_transpose(image).size == image.size
         assert image.getexif().get(274) is None
     processed = ProcessedMedia(ImageFile(path=source, width=3000, height=1500), [output])
-    assert resolve_media_info(processed, str(output)) == (1280, 2560, 0)
+    assert resolve_media_info(processed, str(output)) == (1500, 3000, 0)
 
 
 def test_oriented_webp_conversion_keeps_display_direction(tmp_path: Path) -> None:

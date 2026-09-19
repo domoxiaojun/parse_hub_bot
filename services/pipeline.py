@@ -242,6 +242,7 @@ class ParsePipeline:
             "媒体处理",
             lambda: process_media_files(download_result),
             cleanup=lambda: shutil.rmtree(download_result.output_dir, ignore_errors=True),
+            timeout=20 * 60,
         )
         if maybe_processed_list is None:
             return None

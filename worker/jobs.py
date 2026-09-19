@@ -101,14 +101,20 @@ class Jobs:
 
         try:
             async with self.capacity:
-                result = await self.engine.prepare(
-                    url, mode=request.mode, output_mode=request.outputMode,
-                    config=config, progress=progress, directory=self.store.files,
-                    refresh=request.refresh,
-                    register_directory=lambda path: self.store.register_path(owner, path, "directory", existing=True),
-                    register_file=lambda path: self.store.register_path(owner, path, "file"),
-                    use_persistent_cache=request.delivery is not None,
-                )
+                try:
+                    async with asyncio.timeout(45 * 60):
+                        result = await self.engine.prepare(
+                            url, mode=request.mode, output_mode=request.outputMode,
+                            config=config, progress=progress, directory=self.store.files,
+                            refresh=request.refresh,
+                            register_directory=lambda path: self.store.register_path(
+                                owner, path, "directory", existing=True
+                            ),
+                            register_file=lambda path: self.store.register_path(owner, path, "file"),
+                            use_persistent_cache=request.delivery is not None,
+                        )
+                except TimeoutError:
+                    raise EngineError("upstream_timeout", "prepare") from None
             if result.get("access") != "public":
                 raise EngineError("content_restricted", "prepare")
             # Never keep a partial conversion as the canonical cache result. A retry may

@@ -124,14 +124,18 @@ async def create_telegraph_page(html_content: str, cli: Client, parse_result: An
     """创建 Telegraph 页面，返回页面 URL"""
     logger.debug(f"创建 Telegraph 页面: title={parse_result.title}")
     me = await cli.get_me()
-    page = await Telegraph().create_page(
-        parse_result.title or "-",
-        html_content=html_content,
-        author_name=f"{me.full_name} | @{me.username}",
-        author_url=parse_result.raw_url,
-    )
-    logger.debug(f"Telegraph 页面已创建: {page.url}")
-    return page.url
+    telegraph = Telegraph()
+    try:
+        page = await telegraph.create_page(
+            parse_result.title or "-",
+            html_content=html_content,
+            author_name=f"{me.full_name} | @{me.username}",
+            author_url=parse_result.raw_url,
+        )
+        logger.debug(f"Telegraph 页面已创建: {page.url}")
+        return page.url
+    finally:
+        await telegraph.close()
 
 
 def replace_url(platform: Platform | None, v: str) -> str:

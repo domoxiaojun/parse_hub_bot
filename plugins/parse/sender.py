@@ -14,6 +14,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup as Ikm,
 )
 from pyrogram.types import (
+    InputRichMessage,
     LinkPreviewOptions,
     Message,
 )
@@ -22,6 +23,7 @@ from core import bs
 from delivery.assets import cache_assets, cached_assets, pipeline_assets_async
 from delivery.models import DeliveryEnvelope, Destination, MediaAsset, SendResult, asset_key_async
 from log import logger
+from plugins.helpers import build_caption_by_str
 from plugins.parse.delivery import deliver
 from repo.settings import SettingsConfig
 from services import CacheEntry, CacheParseResult, PipelineResult, StatusReporter
@@ -147,6 +149,25 @@ class MessageSender:
             reply_markup=reply_markup,
         )
 
+    async def text_with_preview_above(self, text: str, *, reply_markup: Ikm | None = None) -> Message:
+        return await self.text(
+            text,
+            link_preview_options=LinkPreviewOptions(show_above_text=True),
+            reply_markup=reply_markup,
+        )
+
+    async def rich_message(self, rich_message: InputRichMessage, *, reply_markup: Ikm | None = None) -> Message:
+        return cast(
+            Message,
+            await self._send_and_schedule_delete(
+                partial(
+                    self.msg.reply_rich if self.config.reply_msg else self.msg.answer_rich,
+                    rich_message=rich_message,
+                    reply_markup=reply_markup,
+                )
+            ),
+        )
+
 
 def envelope_for(sender: MessageSender, parse_result: Any, assets: tuple[MediaAsset, ...],
                  custom_content: str = "", reading_url: str = "") -> DeliveryEnvelope:
@@ -220,6 +241,17 @@ async def send_media(sender: MessageSender, parse_result: AnyParseResult,
 
 
 async def send_cached(sender: MessageSender, entry: CacheEntry, url: str, *, custom_content: str = "") -> None:
+    if entry.rich:
+        caption = build_caption_by_str(
+            entry.parse_result.title,
+            entry.parse_result.content,
+            url,
+            config=sender.config,
+            custom_content=custom_content,
+            rich=True,
+        )
+        await sender.rich_message(InputRichMessage(markdown=caption))
+        return
     parsed = SimpleNamespace(raw_url=url, title=entry.parse_result.title, content=entry.parse_result.content)
     envelope = envelope_for(sender, parsed, cached_assets(entry.media or []), custom_content, entry.telegraph_url or "")
     await send_content(sender, envelope)
