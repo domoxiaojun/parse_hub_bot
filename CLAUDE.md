@@ -47,7 +47,7 @@ mypy 配置为 strict-ish（`disallow_untyped_defs`），新代码必须带完�
 plugins/            pyrogram handlers（plugins={"root": "plugins"} 自动加载）
   parse/handlers.py   消息/内联入口 → handle_parse()
   parse/sender.py     MessageSender：把解析/缓存结果组装成 DeliveryEnvelope
-  parse/delivery.py   Bot 侧适配器：TelegramTransport + send_envelope；回执经 worker.store.Store(recover=False) 记入 worker_jobs，故 Bot 也要求 SQLite
+  parse/delivery.py   Bot 侧适配器：TelegramTransport + send_envelope；使用进程内状态与 MemoryReferences，不写 Worker 回执表
   settings/           /settings 交互，按 target 分层（user/group/member/topic/channel）
 services/           无 Telegram 依赖的业务层
   parser.py           ParseService（单例，包 parsehub.ParseHub，带 cookie/proxy 轮换与重试）

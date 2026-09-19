@@ -1,5 +1,6 @@
 """Platform-independent final assets and delivery contracts."""
 
+import asyncio
 import hashlib
 import math
 from collections.abc import Callable
@@ -153,6 +154,10 @@ def asset_key(source: str, index: int, paths: list[Path | str]) -> str:
         else:
             digest.update(path.encode())
     return digest.hexdigest()
+
+
+async def asset_key_async(source: str, index: int, paths: list[Path | str]) -> str:
+    return await asyncio.to_thread(asset_key, source, index, paths)
 
 
 def from_worker(item: dict[str, Any], dest: Destination, resolve: Callable[[str, str], Path]) -> DeliveryEnvelope:

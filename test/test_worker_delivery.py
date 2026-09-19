@@ -407,12 +407,56 @@ def test_reference_expired_refreshes_pair_and_reuses_request_ids():
     asyncio.run(run())
 
 
-def test_cache_cleanup_preserves_acknowledged_and_uncertain_jobs(tmp_path: Path):
+def test_transport_refresh_falls_back_to_local_file_when_origin_is_unavailable(tmp_path: Path):
+    async def run():
+        from unittest.mock import patch
+
+        media = tmp_path / "video.mp4"
+        media.write_bytes(b"video")
+        client = SimpleNamespace(
+            get_messages=AsyncMock(side_effect=OSError("origin unavailable")),
+            resolve_peer=AsyncMock(return_value=raw.types.InputPeerSelf()),
+        )
+        transport = TelegramTransport(client, "123", MemoryReferences())
+        transport._document = AsyncMock(return_value="fresh-document")
+        uploaded = UploadedAsset(
+            MediaAsset("key", "video", media), "preview",
+            {"media": "stale-document", "origin": {"chatId": 1, "messageId": 2}}, None, "cache-key",
+        )
+        document = raw.types.InputDocument(id=1, access_hash=1, file_reference=b"")
+        with patch("delivery.transport.decode", return_value=document):
+            refreshed = await transport.refresh(uploaded, Destination(chat_id=123))
+        assert refreshed.refs["media"] == "fresh-document"
+        transport._document.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_ack_checkpoint_failure_does_not_turn_confirmed_send_into_failure():
+    async def run():
+        transport, state = FakeTransport(), {}
+        calls = 0
+
+        def checkpoint():
+            nonlocal calls
+            calls += 1
+            if calls >= 4:
+                raise OSError("database temporarily unavailable")
+
+        result = await send_envelope(envelope([live()]), transport, state, checkpoint)
+        assert result.status == "sent"
+        assert transport.sent
+
+    asyncio.run(run())
+
+
+def test_cache_cleanup_expires_old_delivery_receipts_but_keeps_recent(tmp_path: Path):
     store = Store(tmp_path)
-    for status in ("sent", "unknown", "partial"):
-        store.save_job({"id": status, "status": "ready", "delivery": {"status": status}}, status, status)
-    store.db.execute("UPDATE worker_jobs SET updated=0")
+    store.save_job({"id": "old", "status": "ready", "delivery": {"status": "sent"}}, "old", "old")
+    store.save_job({"id": "recent", "status": "ready", "delivery": {"status": "unknown"}}, "recent", "recent")
+    store.db.execute("UPDATE worker_jobs SET updated=0 WHERE id='old'")
     store.db.commit()
     store.cleanup()
-    assert all(store.job(status) for status in ("sent", "unknown", "partial"))
+    assert store.job("old") is None
+    assert store.job("recent") is not None
     store.close()

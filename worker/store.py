@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 TTL = 172800
+DELIVERY_RECEIPT_TTL = 7 * 86400
 LEASE_TTL = 300
 # A freshly published, non-reusable result is leased by its waiter only after the
 # shared task returns; keep it out of cleanup for this long.
@@ -29,6 +30,7 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
             CREATE TABLE IF NOT EXISTS worker_jobs (
               id TEXT PRIMARY KEY, idem TEXT UNIQUE, fingerprint TEXT, payload TEXT, updated REAL);
             CREATE TABLE IF NOT EXISTS worker_cache (
@@ -61,7 +63,10 @@ class Store:
 
     def recover(self) -> None:
         """Mark work left by a dead Worker; only the process that owns the data lock may call this."""
-        for row in self.db.execute("SELECT id,payload FROM worker_jobs").fetchall():
+        for row in self.db.execute(
+            "SELECT id,payload FROM worker_jobs "
+            "WHERE json_extract(payload, '$.status') IN ('queued', 'running')"
+        ).fetchall():
             payload = json.loads(row["payload"])
             if payload["status"] in {"queued", "running"}:
                 delivery = payload.get("delivery")
@@ -138,13 +143,11 @@ class Store:
         self.db.close()
 
     def save_job(self, payload: dict[str, Any], idem: str = "", fingerprint: str = "") -> None:
-        existing = self.db.execute("SELECT id FROM worker_jobs WHERE id=?", (payload["id"],)).fetchone()
-        if existing:
-            self.db.execute("UPDATE worker_jobs SET payload=?,updated=? WHERE id=?",
-                            (json.dumps(payload), time.time(), payload["id"]))
-        else:
-            self.db.execute("INSERT INTO worker_jobs VALUES (?,?,?,?,?)",
-                            (payload["id"], idem or None, fingerprint, json.dumps(payload), time.time()))
+        self.db.execute(
+            "INSERT INTO worker_jobs (id,idem,fingerprint,payload,updated) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated",
+            (payload["id"], idem or None, fingerprint, json.dumps(payload), time.time()),
+        )
         self.db.commit()
 
     def job(self, job_id: str) -> dict[str, Any] | None:
@@ -250,8 +253,17 @@ class Store:
                 continue
             self.db.execute("DELETE FROM worker_cache WHERE id=?", (row["id"],))
             total -= row["bytes"]
-        # Content TTL must not erase acknowledged/uncertain delivery history and enable replays.
-        self.db.execute("DELETE FROM worker_jobs WHERE updated<? AND json_type(payload, '$.delivery') IS NULL",
-                        (now - TTL,))
+        # Prepared content expires after 48h; delivery receipts remain queryable for 7d,
+        # then terminal receipts can be discarded without enabling replay of old attempts.
+        self.db.execute(
+            "DELETE FROM worker_jobs WHERE updated<? AND json_type(payload, '$.delivery') IS NULL",
+            (now - TTL,),
+        )
+        self.db.execute(
+            "DELETE FROM worker_jobs WHERE updated<? "
+            "AND json_extract(payload, '$.delivery.status') "
+            "IN ('sent', 'partial', 'unknown', 'failed', 'cancelled')",
+            (now - DELIVERY_RECEIPT_TTL,),
+        )
         self.db.execute("DELETE FROM worker_aliases WHERE key NOT IN (SELECT key FROM worker_cache)")
         self.db.commit()

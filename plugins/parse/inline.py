@@ -12,7 +12,7 @@ from pyrogram.types import (
 )
 
 from db import get_session
-from delivery.assets import cache_assets, cached_assets, pipeline_assets
+from delivery.assets import cache_assets, cached_assets, pipeline_assets_async
 from delivery.models import DeliveryEnvelope, DeliveryError, Destination
 from i18n import t_
 from log import logger
@@ -70,7 +70,7 @@ async def inline_result_download(cli: Client, chosen: ChosenInlineResult) -> Non
             result = await pipeline.run()
             if result is None:
                 return
-            assets = pipeline_assets(result.processed_list, url)
+            assets = await pipeline_assets_async(result.processed_list, url)
             parsed = result.parse_result
             envelope = DeliveryEnvelope(dest, url, parsed.title or "", parsed.content or "", url, media=assets)
             sent = await deliver(cli, envelope, chosen.inline_message_id)

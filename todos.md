@@ -17,10 +17,10 @@
 
 ## 第二批：约束与容量
 - [ ] pipeline.py:214 下载代理 mask_proxy（1-2 的唯一保留项）
-- [ ] 1-6 Bot 不写持久回执；Worker 回执 7d TTL；recover 只扫未完成；ON CONFLICT upsert；文档同步
-- [ ] 2-4 Bot.stop 不清空 Worker 占用的 downloads
-- [ ] 2-5 asset_key 哈希到线程；Store synchronous=NORMAL；ack checkpoint 失败不误判
-- [ ] 2-1 transport.refresh origin 失败回退本地重传
+- [x] 1-6 Bot 不写持久回执；Worker 回执 7d TTL；recover 只扫未完成；ON CONFLICT upsert；文档同步
+- [x] 2-4 Bot.stop 不清空 Worker 占用的 downloads
+- [x] 2-5 asset_key 哈希到线程；Store synchronous=NORMAL；ack checkpoint 失败不误判
+- [x] 2-1 transport.refresh origin 失败回退本地重传
 
 ## 第三批：功能与健壮性
 - [ ] 1-3 文章 markdown Rich 全量交付（下载内嵌图、tg://photo 嵌入、超限按段拆分、删 Telegraph/rich_mode、恢复 video_cover）

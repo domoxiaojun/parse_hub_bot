@@ -13,7 +13,7 @@ Compose挂载原目录：
 | 宿主目录 | 容器目录 | 用途 |
 | --- | --- | --- |
 | ./data | /app/data | 原平台YAML、data/db/database.db及session |
-| ./downloads | /app/downloads | 下载与48小时媒体缓存 |
+| ./downloads | /app/downloads | 下载与48小时媒体缓存（交付回执保留7天） |
 | ./logs | /app/logs | 原日志路径保留 |
 
 Worker启动时初始化原数据库表，并新增带worker_前缀的表；原业务表保留。若原.env自定义DATABASE_URL、DATA_PATH或DOWNLOAD_DIR，请保留相同配置并确保对应路径已挂载。平台Cookie/代理仍存原YAML，gptbot Admin是该文件的远程编辑入口，保存后重启Worker生效。
@@ -115,4 +115,4 @@ docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.
 docker compose -f compose.worker.yaml start parsehub-worker
 ```
 
-全量清理不会删除任务表：已持久化的交付回执用于幂等重查，由 Worker 自身按 48 小时过期。
+全量清理不会删除任务表：已持久化的交付回执用于幂等重查，由 Worker 自身按 7 天过期。

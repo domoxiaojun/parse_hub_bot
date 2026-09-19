@@ -42,7 +42,7 @@ Worker直接沿用原项目布局，无需复制成第二套配置：
 | Token、API_ID/API_HASH、BOT_PROXY等 | 原`.env`或进程环境 |
 | 平台Cookie、解析/下载代理 | `DATA_PATH/config/platform_config.yaml`，默认`data/config/platform_config.yaml` |
 | SQLite数据库 | 原`DATABASE_URL`，默认`sqlite+aiosqlite:///data/db/database.db` |
-| 下载和48小时媒体缓存 | 原`DOWNLOAD_DIR`，默认`downloads/` |
+| 下载和48小时媒体缓存（交付回执保留7天） | 原`DOWNLOAD_DIR`，默认`downloads/` |
 | 原 MTProto session | 保留原文件；Worker不再打开它 |
 
 原SQLite表保留；Worker启动时运行原数据库初始化，任务、文件缓存和租约仍写入同一文件中的`worker_*`表，

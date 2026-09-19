@@ -154,21 +154,26 @@ class TelegramTransport:
         asset = uploaded.asset
         origin = uploaded.refs.get("origin")
         if origin:
-            message = await self.client.get_messages(origin["chatId"], origin["messageId"])
-            if asset.type == "live_photo" and uploaded.representation == "native":
-                if not message.live_photo or not message.photo:
-                    raise DeliveryError("live_photo_pair_missing")
-                refs = {"photo": message.photo.file_id, "media": message.live_photo.file_id, "origin": origin}
-            else:
-                value = getattr(message, "video" if asset.type == "live_photo" else asset.type, None)
-                if value is None:
-                    raise DeliveryError("media_reference_expired")
-                cover = getattr(value, "video_cover", None)
-                refs = {"media": value.file_id, "photo": cover.file_id if cover else None, "origin": origin}
-                if asset.type == "live_photo" and not refs["photo"]:
-                    raise DeliveryError("live_photo_pair_missing")
-            self.cache.set_upload(uploaded.cache_key, refs)
-            return await self.upload(asset, dest, rich=uploaded.representation == "preview")
+            try:
+                message = await self.client.get_messages(origin["chatId"], origin["messageId"])
+                if asset.type == "live_photo" and uploaded.representation == "native":
+                    if not message.live_photo or not message.photo:
+                        raise DeliveryError("live_photo_pair_missing")
+                    refs = {"photo": message.photo.file_id, "media": message.live_photo.file_id, "origin": origin}
+                else:
+                    value = getattr(message, "video" if asset.type == "live_photo" else asset.type, None)
+                    if value is None:
+                        raise DeliveryError("media_reference_expired")
+                    cover = getattr(value, "video_cover", None)
+                    refs = {"media": value.file_id, "photo": cover.file_id if cover else None, "origin": origin}
+                    if asset.type == "live_photo" and not refs["photo"]:
+                        raise DeliveryError("live_photo_pair_missing")
+                self.cache.set_upload(uploaded.cache_key, refs)
+                return await self.upload(asset, dest, rich=uploaded.representation == "preview")
+            except Exception:
+                # The original message may have been deleted or belong to another
+                # session. If the prepared bytes remain, re-upload them instead.
+                pass
         if not isinstance(asset.media, Path) or (asset.type == "live_photo" and not isinstance(asset.photo, Path)):
             raise DeliveryError("media_reference_expired")
         return await self.upload(asset, dest, rich=uploaded.representation == "preview", force=True)

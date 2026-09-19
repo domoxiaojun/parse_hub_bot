@@ -1,5 +1,6 @@
 """Shared adapters from pipeline/cache objects to immutable final assets."""
 
+import asyncio
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,6 +35,11 @@ def pipeline_assets(processed_list: list[ProcessedMedia], source_id: str, *,
             assets.append(MediaAsset(asset_key(source_id, len(assets), [path]), kind, path,
                                      width=width, height=height, duration=duration, size=path.stat().st_size))
     return tuple(assets)
+
+
+async def pipeline_assets_async(processed_list: list[ProcessedMedia], source_id: str, *,
+                                raw: bool = False) -> tuple[MediaAsset, ...]:
+    return await asyncio.to_thread(pipeline_assets, processed_list, source_id, raw=raw)
 
 
 def cached_assets(media: list[CacheMedia]) -> tuple[MediaAsset, ...]:

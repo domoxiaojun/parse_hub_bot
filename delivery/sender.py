@@ -147,7 +147,10 @@ async def send_envelope(envelope: DeliveryEnvelope, transport: TelegramTransport
             state.update(messageIds=result.message_ids, albums=result.albums, confirmed=result.confirmed,
                          completedFrames=index + 1, mediaCount=sum(len(b.assets) for b in batches[:index + 1]),
                          inFlight=False, text="\n\n".join(b.text for b in batches if b.text))
-            checkpoint()  # Visible acknowledgement must survive a later cache-write failure.
+            try:
+                checkpoint()  # Visible acknowledgement must survive a later cache-write failure.
+            except Exception as error:
+                logger.error("event=delivery.ack_checkpoint_failed error_type=%s", type(error).__name__)
             if uploaded and messages:
                 transport.remember(uploaded, messages, envelope.dest)
             for value in uploaded:
@@ -178,6 +181,9 @@ async def send_envelope(envelope: DeliveryEnvelope, transport: TelegramTransport
         logger.info("event=delivery.confirmed kind=%s n=%s message_ids=%s grouped_ids=%s", kind,
                     len(batch.assets), message_ids, [a["groupedId"] for a in result.albums])
     state.update(status="sent", inFlight=False)
-    checkpoint()
+    try:
+        checkpoint()
+    except Exception as error:
+        logger.error("event=delivery.final_checkpoint_failed error_type=%s", type(error).__name__)
     result.status = "sent"
     return result

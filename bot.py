@@ -1,5 +1,4 @@
 import asyncio
-import shutil
 from typing import Any
 
 import pillow_heif
@@ -57,9 +56,8 @@ class Bot(Client):
         ws.exit_flag = True
         await super().stop(*args, **kwargs)
         await close_db()
-        # 结束时清理下载残留
-        if self.cfg.download_dir.exists() and not self.cfg.debug_skip_cleanup:
-            shutil.rmtree(self.cfg.download_dir)
+        # Per-request pipelines clean their own outputs. DOWNLOAD_DIR is shared with
+        # the Worker cache and must not be deleted during Bot shutdown.
         return self
 
     def init_watchdog(self) -> None:

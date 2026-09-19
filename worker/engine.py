@@ -16,6 +16,7 @@ from parsehub.types import AniFile, ImageFile, LivePhotoFile, VideoFile
 from parsehub.utils.helpers import match_url
 
 from delivery.assets import worker_cached_media
+from delivery.models import asset_key
 from services import ParseService, PipelineResult
 from services.media import ProcessedMedia, resolve_live_photo_video_info, resolve_media_info
 from utils.helpers import pack_dir_to_tar_gz
@@ -256,6 +257,7 @@ class ParseHubEngine:
             archive_path = output_dir.with_suffix(".tar.gz")
             if archive_path.is_file():
                 result["_files"].append(str(archive_path.resolve()))
+        await self._attach_asset_keys(result)
         logger.info(
             "event=media.summary platform=%s expected=%s available=%s",
             platform,
@@ -340,6 +342,15 @@ class ParseHubEngine:
             )
         else:
             result["media"].extend([*photos, video])
+
+    async def _attach_asset_keys(self, result: dict[str, Any]) -> None:
+        """Compute content keys off the event loop so delivery can reuse them cheaply."""
+        source = str(result.get("canonicalUrl") or result.get("sourceUrl") or "")
+        for index, media in enumerate(result.get("media", [])):
+            paths = [Path(result["_mediaFiles"][media["mediaId"]]["path"])]
+            if media.get("type") == "live_photo" and media.get("videoMediaId"):
+                paths.append(Path(result["_mediaFiles"][media["videoMediaId"]]["path"]))
+            media["assetKey"] = await asyncio.to_thread(asset_key, source, index, paths)
 
     def _local_media(
         self,

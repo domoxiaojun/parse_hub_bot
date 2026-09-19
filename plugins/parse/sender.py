@@ -19,8 +19,8 @@ from pyrogram.types import (
 )
 
 from core import bs
-from delivery.assets import cache_assets, cached_assets, pipeline_assets
-from delivery.models import DeliveryEnvelope, Destination, MediaAsset, SendResult, asset_key
+from delivery.assets import cache_assets, cached_assets, pipeline_assets_async
+from delivery.models import DeliveryEnvelope, Destination, MediaAsset, SendResult, asset_key_async
 from log import logger
 from plugins.parse.delivery import deliver
 from repo.settings import SettingsConfig
@@ -171,7 +171,7 @@ async def send_content(sender: MessageSender, envelope: DeliveryEnvelope, mode: 
 async def send_raw(sender: MessageSender, result: PipelineResult, reporter: StatusReporter, *,
                    _t: PreLocaleSelector, custom_content: str = "") -> bool:
     try:
-        assets = pipeline_assets(result.processed_list, str(result.parse_result.raw_url), raw=True)
+        assets = await pipeline_assets_async(result.processed_list, str(result.parse_result.raw_url), raw=True)
         await send_content(sender, envelope_for(sender, result.parse_result, assets, custom_content), "raw")
     except Exception as e:
         logger.opt(exception=e).debug("详细堆栈")
@@ -191,7 +191,7 @@ async def send_zip(sender: MessageSender, result: PipelineResult, reporter: Stat
         if result.output_dir is None:
             raise ValueError("missing_archive_directory")
         archive = await asyncio.to_thread(pack_dir_to_tar_gz, result.output_dir)
-        asset = MediaAsset(asset_key(str(result.parse_result.raw_url), 0, [archive]), "document", archive,
+        asset = MediaAsset(await asset_key_async(str(result.parse_result.raw_url), 0, [archive]), "document", archive,
                            size=archive.stat().st_size)
         await send_content(sender, envelope_for(sender, result.parse_result, (asset,), custom_content), "zip")
     except Exception as e:
@@ -210,7 +210,7 @@ async def send_zip(sender: MessageSender, result: PipelineResult, reporter: Stat
 async def send_media(sender: MessageSender, parse_result: AnyParseResult,
                      processed_list: list[ProcessedMedia], *, _t: PreLocaleSelector,
                      custom_content: str = "") -> CacheEntry | None:
-    assets = pipeline_assets(processed_list, str(parse_result.raw_url))
+    assets = await pipeline_assets_async(processed_list, str(parse_result.raw_url))
     envelope = envelope_for(sender, parse_result, assets, custom_content)
     sent = await send_content(sender, envelope)
     if assets and not sent.assets_cached:
