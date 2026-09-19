@@ -44,7 +44,8 @@ def candidate_keys(url: str, account_id: str | None) -> list[str]:
     if not account_id:
         return []
     return [
-        hashlib.sha256(f"v7-original-pipeline:{transport}:{account_id}:{mode}:{url}".encode()).hexdigest()
+        hashlib.sha256(f"{version}:{transport}:{account_id}:{mode}:{url}".encode()).hexdigest()
+        for version in ("v7-original-pipeline", "v8-single-rich", "v9-envelope")
         for transport in ("direct", "files")
         for mode in ("preview", "raw", "zip")
     ]
@@ -244,6 +245,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         help="演练模式：仅查看将被清理的内容和占用容量，不实际删除",
     )
     parser.add_argument(
+        "--online",
+        action="store_true",
+        default=False,
+        help="允许在 Worker 运行期间在线清理 (跳过独占文件锁，仅清理无活跃租约的已完成缓存)",
+    )
+    parser.add_argument(
         "--stats",
         action="store_true",
         default=False,
@@ -260,18 +267,24 @@ def main(args: list[str] | None = None) -> int:
         print(f"[Worker Cache Cleaner] 数据库文件未找到: {db_path}，当前无 Worker 缓存。")
         return 0
 
-    # Share the running Worker's data lock: recovery and purges must never race a live process.
-    sessions = data_path / "sessions"
-    sessions.mkdir(parents=True, exist_ok=True)
-    account_id = resolve_account_id()
-    lock_name = f"bot_{account_id}.worker.lock" if account_id else "worker.lock"
-    lock = (sessions / lock_name).open("a")
-    try:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock.close()
-        print("[Worker Cache Cleaner] Worker 正在运行，请先停止 Worker 再执行清理。")
-        return 1
+    lock = None
+    if not opts.online:
+        # Share the running Worker's data lock: recovery and purges must never race a live process.
+        sessions = data_path / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        account_id = resolve_account_id()
+        lock_name = f"bot_{account_id}.worker.lock" if account_id else "worker.lock"
+        lock_file = (sessions / lock_name).open("a")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock = lock_file
+        except BlockingIOError:
+            lock_file.close()
+            print("[Worker Cache Cleaner] Worker 正在运行。如需不停机在线清理，请附加 --online 参数：")
+            print("  docker exec -it parsehub-parsehub-worker-1 python -m worker.clean_cache --online")
+            print("或使用 run 启动临时容器执行离线清理：")
+            print("  docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache")
+            return 1
 
     store = Store(data_path, max_bytes, database_path=db_path, files_path=download_dir, recover=False)
 
@@ -328,7 +341,8 @@ def main(args: list[str] | None = None) -> int:
         return 0
     finally:
         store.close()
-        lock.close()
+        if lock is not None:
+            lock.close()
 
 
 if __name__ == "__main__":

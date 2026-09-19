@@ -1,6 +1,12 @@
 # 设计
 
-Worker 使用 ParseHub 实际平台注册表，不设平台白名单；HTTP 协议版本为 3。gptbot 是唯一 update 接收者，Worker 通过独立 `no_updates` 客户端完成最终 Rich Message 组装与发送。两端使用同一 Bot Token，健康握手核验 Bot ID。
+## 统一投递规则
+
+一个解析结果是一项投递任务：preview 的普通聊天、Inline/Guest 统一由 Worker 组装一条 Rich Message；raw/zip 保留原文件 Document 语义。Rich 视频使用最终文件的真实宽高和时长，平台脚注与来源超链接进入页脚。媒体方向和格式只在共享预处理阶段处理。
+
+共享 DeliveryEnvelope／MediaAsset／SendResult 定义业务输入输出；唯一 send_envelope 选择 preview Rich 或 raw/zip 原生传输。已确认批次不重发，未知结果不盲目补发。文字超过容量只保留摘要和来源／已有阅读链接，不自动发布或补发全文。旧 Bot 独立运行时复用相同核心。
+
+Worker 使用 ParseHub 实际平台注册表，不设平台白名单；HTTP 协议版本为 3。gptbot 是唯一 update 接收者，Worker 通过独立 `no_updates` Kurigram 客户端完成 raw/zip Document 与 preview Rich 组装发送。两端使用同一 Bot Token，健康握手核验 Bot ID。
 
 ## 薄适配器边界
 
@@ -10,9 +16,9 @@ Worker 只把原 `CacheEntry` 或 `PipelineResult` 适配为 HTTP/发送描述�
 
 ## 结果和发送
 
-preview 根据原 `ProcessedMedia` 映射图片、视频和动画；Live Photo 在 10 秒及 10 MiB 范围内作为一个原生实况消息，其他情况显式拆为图片和视频。raw 将原下载文件作为 document，Live Photo 保留静态图和视频；zip 打包原流水线生成的目录和 metadata；read_only 不下载。
+preview 根据原 `ProcessedMedia` 生成最终资产并组装 Rich blocks；视频传递最终文件真实宽高和时长，来源页脚使用 `RichTextUrl`。图片在共享预处理层规范化 EXIF 方向；Live 视频检查 H.264/yuv420p、实际尺寸和时长，原生超限不裁切。raw 将原下载文件作为 document；zip 打包原目录与 metadata；read_only 不下载。
 
-普通消息由 Worker 发送，Guest/inline 使用单次 Rich Message 编辑并在限制内降级 Live Photo。直出 HTTP 查询清空内部 results，只返回交付回执与有界证据；`file_id` 不进入 gptbot 的文件交接契约。
+普通消息每个来源结果是一项 Rich 任务；Inline/Guest 在 Rich 单条限制内完成一次编辑，超限不丢媒体或补发。长正文摘要加来源或已有阅读链接，不自动发布阅读页。raw/zip 的文件发送保持原生 Document。直出查询清空 results 并过滤内部随机 ID，仅返回回执与有界证据；Telegram 引用仅进入内部缓存。
 
 ## 接口
 

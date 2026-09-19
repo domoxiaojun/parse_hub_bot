@@ -13,6 +13,8 @@ class MessageDelivery(InputModel):
     chatId: str = Field(pattern=r"^-?[1-9][0-9]{0,19}$")
     replyToMessageId: int | None = Field(default=None, gt=0, le=2147483647)
     messageThreadId: int | None = Field(default=None, gt=0, le=2147483647)
+    silent: bool = False
+    protect: bool = False
 
 
 class InlineDelivery(InputModel):

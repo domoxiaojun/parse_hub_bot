@@ -25,7 +25,13 @@ def public_job(job: dict) -> dict:
     """Direct delivery callers need the receipt/evidence, never the prepared source body."""
     if job.get("delivery") is None:
         return job
-    return {**job, "results": []}
+    def public(value: object) -> object:
+        if isinstance(value, dict):
+            return {k: public(v) for k, v in value.items() if not k.startswith("_")}
+        if isinstance(value, list):
+            return [public(v) for v in value]
+        return value
+    return {**job, "results": [], "delivery": public(job["delivery"])}
 
 
 def create_app(jobs: Jobs, service_key: str, platform_config: PlatformConfigFile | None = None) -> web.Application:

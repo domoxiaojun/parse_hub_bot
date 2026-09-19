@@ -23,7 +23,7 @@ ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv 
 
 Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
 `ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件。Worker只负责HTTP/幂等/租约、
-把原版输出适配为交付描述，以及最终Rich Message组装和Telegram发送。gptbot继续作为唯一update接收方；
+把原版输出适配为投递信封，以及preview Rich Message、raw/zip原文件的Telegram发送。gptbot继续作为唯一update接收方；
 直出解析轮不调用LLM，未携带delivery的旧工具请求仍使用文件交接。
 
 生产解析先按原版`handle_parse()`顺序调用`ParseService.get_raw_url()`，再检查原`persistent_cache`（仅直出）
@@ -101,13 +101,14 @@ gptbot仅保存PARSEHUB_WORKER_URL、PARSEHUB_WORKER_SECRET、PARSEHUB_WORKER_AC
 
 同一幂等键表示一次交付尝试。带delivery的任务重查返回持久回执，即使租约已释放也不重新发送；无delivery的旧准备任务保持租约过期拒绝语义。Worker重启将未完成任务标记interrupted，发送中无可靠确认的交付标记unknown。已持久化sent回执保持成功。
 
-直出任务在Worker内发送，不把媒体传回gptbot。每条RichMessage发送前持久化sending/inFlight，确认后记录messageIds或inline确认及已交付证据；终态回执保存后才释放lease。部分和未知发送不盲目自动补发。无delivery的旧工具任务仍由gptbot读取文件、上传发送并释放租约。本地媒体使用mediaId、sizeBytes、mimeType等不透明描述；原持久缓存命中时，内部描述可直接携带同Bot的Telegram file_id，HTTP直出响应仍会清空results。
+直出任务在Worker内发送，不把媒体传回gptbot。preview普通聊天、Inline和Guest均由Worker组装一条Rich Message；raw/zip才使用原生Document发送。每个可见请求前持久化sending/inFlight及稳定随机ID，确认后保存messageIds、逐结果tasks及已交付证据。已确认批次不重发，网络结果不明记录unknown。缓存文件过期不会删除投递回执。直出HTTP响应清空results，并过滤内部随机ID；上传引用只保存在内部缓存。
 
 ## 输出与缓存
 
-最多10个不同链接按原顺序返回，逐项失败隔离。preview直接适配原`ProcessedMedia`，图集、GIF、长图和视频的处理决定均来自原`ParsePipeline`；符合限制的Live Photo组装为原生实况消息。raw把原流水线下载文件作为document，Live Photo保留静态图和视频；zip打包原流水线生成的目录与metadata；read_only只使用原解析服务和解析缓存。超限原文件/归档不静默改成预览。
+最多10个不同链接按原顺序返回，逐项失败隔离。preview直接适配原`ProcessedMedia`，图集、GIF、长图和视频的处理决定均来自原`ParsePipeline`；Live Photo在共享资产中始终保持一对静图与视频，Rich 预览按视频块保留真实尺寸与封面。raw把原流水线下载文件作为document，Live Photo保留静态图和视频；zip打包原流水线生成的目录与metadata；read_only只使用原解析服务和解析缓存。超限原文件/归档不静默改成预览。
 
 固定172800秒从发布开始，访问不续期，容量默认10GiB，启动及每10分钟清理；持有租约的文件不会删除。Cookie与解析/下载代理均由原`platform_config.yaml`和原服务选择，Worker不增加挑战检测、额外Cookie尝试或网络栈改写。提交到Worker的入口URL仍拒绝本机、私网字面地址和内嵌凭据。
+媒体处理规则带版本；缺少当前版本的旧Telegram媒体缓存不会复用，Worker缓存键升级后也会重新生成预览，避免继续发送方向错误的历史封面。
 
 ## 验证边界
 
@@ -117,14 +118,18 @@ gptbot仅保存PARSEHUB_WORKER_URL、PARSEHUB_WORKER_SECRET、PARSEHUB_WORKER_AC
 
 ## 直出卡片与确认
 
-Worker以Kurigram 2.2.26（Bot API 10.3）作为Rich Message最低版本。排版使用中等字号Section Heading、
-平台/作者/时间、小段正文或可折叠Details长正文、媒体主体和底部“查看原文”。外部正文作为literal
-RichText，不解释为HTML/Markdown结构。预览媒体按来源语义映射：单图为Photo，2至4张连续图片为Collage，
-5张以上为Slideshow；符合10秒和10 MiB限制的Live Photo在普通消息中使用原生`sendLivePhoto`，在
-Guest/inline中明确降级为静态照片和“实况视频”两个Rich Block；视频、GIF、音频、语音和文件分别使用
-对应Rich Block。HEIC、HEIF、AVIF和WebP会转换为Telegram照片可接受的JPEG；原始文件和归档仍以
-Document呈现。没有来源语义的位置、表格、公式或思考内容不会被臆造。已有阅读版链接时可展示。普通消息超过
-50项媒体拆分发送，Guest/inline合并编辑一条，超出其单条限制明确失败而不另行公开补发。
+共享核心只有一个send_envelope入口，输入DeliveryEnvelope/MediaAsset，返回SendResult。Worker使用同一Kurigram no-updates会话先上传媒体引用，再组装`InputRichMessage`并调用`send_rich_message`/`edit_inline_text`；raw/zip才走原生Document。无需向任何聊天发送用于上传的占位媒体。
+
+| 目标和媒体 | 输出 |
+| --- | --- |
+| preview（普通聊天/Inline/Guest） | 一条Rich Message；视频传递最终文件真实宽、高、时长；平台脚注与可点击“查看原文”保留 |
+| raw/zip | 原文件或同名归档作为Document；不走preview Rich媒体改写 |
+
+Kurigram 的 `InputMediaVideo.video_cover` 直接绑定每个视频的 Telegram 封面引用；封面引用也按附件保守计数，最多50个附件；文字和blocks超过官方单条容量时失败，不截掉媒体或公开补发。每个视频使用自己的封面，不额外显示静图。Rich客户端实际封面显示仍需真机验收。
+
+共享预处理先规范化EXIF/HEIF方向，再转换和缩放。Live封面保持单图，普通长图保留切片；视频读取实际显示尺寸并规范为H.264/yuv420p。原生Live超过10秒或10 MB时发送前失败，不裁掉视频；Inline视频预览不套用原生Live的限制。发送阶段不再旋转或转码。
+
+标题、摘要和来源进入Rich块；来源使用可点击URL，平台标识位于页脚。超长文字使用摘要及来源/已有阅读链接，不自动发布第三方阅读页。缓存按Bot、资产和native/preview表示保存成对引用，过期时成对刷新；无法恢复完整引用时受控失败，可用refresh重新准备。上传失败日志记录阶段、批次、媒体序号、类型、大小、表示方式、异常类型和RPC标识，不记录URL、路径、文件名、正文、凭据或原始异常文本。
 
 返回delivery状态pending/sending/sent/partial/failed/cancelled/unknown；messageIds仅来自Telegram确认，inline编辑记录confirmed。全部解析失败也可以发出受控错误卡，但job.status为failed、delivery为partial，不伪装解析成功。证据仅包含已确认交付的来源，mediaCount只统计已交付frame。网络异常原文不进入用户结果。
 

@@ -75,7 +75,7 @@ class Jobs:
     def key(url: str, request: JobInput) -> str:
         transport = "direct" if request.delivery is not None else "files"
         return hashlib.sha256(
-            f"v7-original-pipeline:{transport}:{request.accountId}:{request.outputMode}:{url}".encode()
+            f"v9-envelope:{transport}:{request.accountId}:{request.outputMode}:{url}".encode()
         ).hexdigest()
 
     async def _prepare(self, url: str, request: JobInput, config: dict[str, Any], key: str,
@@ -148,6 +148,9 @@ class Jobs:
         public = {key: copy.deepcopy(value) for key, value in result.items() if not key.startswith("_")}
         public["sourceUrl"] = url
         public["cacheHit"] = hit is not None
+        # Delivery needs the requested representation to choose Rich preview versus
+        # byte-preserving raw/zip documents. This is request metadata, not cached media state.
+        public["outputMode"] = request.outputMode
         public["leaseId"] = self.store.lease(cache_id)
         if request.mode == "read_only":
             public["media"] = []

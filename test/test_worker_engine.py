@@ -6,7 +6,7 @@ import logging
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from parsehub import DownloadResult, ParseHub
@@ -14,6 +14,7 @@ from parsehub.errors import ParseError
 from parsehub.types import AniFile, ImageFile, LivePhotoFile, PostType, VideoFile
 
 from services import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, PipelineResult
+from services.cache import MEDIA_CACHE_VERSION
 from services.media import ProcessedMedia
 from worker.engine import ParseHubEngine
 from worker.security import EngineError, validate_url
@@ -34,6 +35,20 @@ def parsed(*, kind: str = "image", markdown: str | None = None):
     if markdown is not None:
         value.markdown_content = markdown
     return value
+
+
+def test_media_cache_version_distinguishes_legacy_payloads() -> None:
+    payload = {
+        "parse_result": {"title": "title", "content": "body"},
+        "media": [{"type": "video", "file_id": "video", "cover_file_id": "cover"}],
+    }
+    legacy = CacheEntry.model_validate(payload)
+    current = CacheEntry.model_validate(CacheEntry.model_validate(payload).model_dump())
+
+    assert legacy.media_version == MEDIA_CACHE_VERSION
+    assert "media_version" not in legacy.model_fields_set
+    assert current.media_version == MEDIA_CACHE_VERSION
+    assert "media_version" in current.model_fields_set
 
 
 def service(result=None):
@@ -232,12 +247,14 @@ def test_preview_adapts_original_processed_media_and_live_photo(tmp_path: Path) 
                                                output_dir=folder))
     registered = []
 
-    result = run(instance.prepare("https://xhslink.cn/a", register_directory=registered.append))
+    with patch("services.media.MediaInfoReader.read", return_value=SimpleNamespace(width=10, height=20, duration=14)):
+        result = run(instance.prepare("https://xhslink.cn/a", register_directory=registered.append))
 
     assert registered == [folder]
     assert [item["type"] for item in result["media"]] == ["photo", "animation", "video", "live_photo"]
     live = result["media"][-1]
-    assert live["durationSeconds"] == 3 and live["mediaId"] != live["videoMediaId"]
+    assert (live["width"], live["height"], live["durationSeconds"]) == (10, 20, 14)
+    assert live["mediaId"] != live["videoMediaId"]
     assert set(result["_mediaFiles"]) == {
         item["mediaId"] for item in result["media"][:-1]
     } | {live["mediaId"], live["videoMediaId"]}

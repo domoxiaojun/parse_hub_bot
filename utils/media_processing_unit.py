@@ -74,23 +74,31 @@ class MediaProcessingUnit:
     #  图片处理
     # ------------------------------------------------------------------ #
 
-    async def process_image(self, file_path: Path) -> MediaProcessResult:
+    async def process_image(self, file_path: Path, *, split_long_images: bool = True) -> MediaProcessResult:
         image_format, is_broken, image_mode = await self._detect_image_format(file_path)
         if image_format == "GIF":
             self.logger("图片为 GIF 格式，无需处理")
             return MediaProcessResult(output_paths=[file_path])
-        needs_convert = image_format not in {"PNG", "JPEG"}
-        needs_rgb = image_mode == "RGBA"
         source = file_path
         intermediates: list[Path] = []  # 统一收集中间文件
 
         try:
+            if not is_broken and (oriented := await asyncio.to_thread(self._normalize_orientation, source)):
+                source = oriented
+                intermediates.append(source)
+                image_format, image_mode = "JPEG", "RGB"
+
+            needs_convert = (image_format not in {"PNG", "JPEG"}
+                             or source.suffix.lower() not in {".png", ".jpg", ".jpeg"})
+            needs_rgb = image_mode == "RGBA"
             if needs_convert or is_broken or needs_rgb:
                 self.logger(f"图片需转换: format={image_format}, mode={image_mode}, broken={is_broken}")
-                source = await self._img2jpg(file_path)
+                source = await self._img2jpg(source)
                 intermediates.append(source)
 
-            if result := await asyncio.to_thread(self._adapt_image, source):
+            if result := await asyncio.to_thread(
+                self._adapt_image, source, split_long_images=split_long_images,
+            ):
                 return result
 
             # _adapt_image 无需处理，尝试 downscale
@@ -132,7 +140,21 @@ class MediaProcessingUnit:
             codec.strip().lower(), codec.strip().upper()
         )
 
-    def _adapt_image(self, file_path: Path) -> MediaProcessResult | None:
+    def _normalize_orientation(self, file_path: Path) -> Path | None:
+        """Bake EXIF orientation into pixels before any sizing or Telegram upload."""
+        with Image.open(file_path) as img:
+            orientation = img.getexif().get(274, 1)
+            if orientation not in {2, 3, 4, 5, 6, 7, 8}:
+                return None
+            normalized = ImageOps.exif_transpose(img)
+            if normalized.mode != "RGB":
+                normalized = normalized.convert("RGB")
+            out_path = self.output_dir / f"{file_path.stem}_oriented.jpg"
+            normalized.save(out_path, format="JPEG", quality=95)
+        self.logger(f"图片方向已规范化: orientation={orientation}, output={out_path}")
+        return out_path
+
+    def _adapt_image(self, file_path: Path, *, split_long_images: bool = True) -> MediaProcessResult | None:
         """分析图片尺寸并做填充 / 切割，返回 None 表示无需处理"""
         with Image.open(file_path) as img:
             w, h = img.width, img.height
@@ -155,6 +177,14 @@ class MediaProcessingUnit:
             if hw_ratio <= 5 or (w < 200 and hw_ratio < 20):
                 self.logger("竖图比例正常，跳过处理")
                 return None
+            if not split_long_images:
+                if hw_ratio <= 20:
+                    self.logger("封面长图保持单图，跳过切割")
+                    return None
+                self.logger("封面竖图比例超限，使用填充保持单图")
+                padding = self._calc_padding_vertical(w, h)
+                with Image.open(file_path) as img:
+                    return self._pad_image(file_path, img, padding)
             if w < 200 and hw_ratio > 20:
                 self.logger("窄竖图比例超限，需要填充")
                 padding = self._calc_padding_vertical(w, h)
@@ -170,7 +200,8 @@ class MediaProcessingUnit:
         output = self.output_dir / file_path.with_suffix(".jpg").name
         try:
             with Image.open(file_path) as pil_img:
-                img = pil_img.convert("RGB") if pil_img.mode != "RGB" else pil_img
+                transposed = ImageOps.exif_transpose(pil_img)
+                img = transposed.convert("RGB") if transposed.mode != "RGB" else transposed
                 img.save(output, format="JPEG")
         except OSError as e:
             self.logger(f"Pillow 转换失败，尝试 ffmpeg: {e}")

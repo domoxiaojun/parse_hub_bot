@@ -5,12 +5,15 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from core import bs
 from db import get_session
+from delivery.models import MEDIA_VERSION
 from log import logger
 from repo.cache import CacheRepo
+
+MEDIA_CACHE_VERSION = MEDIA_VERSION
 
 
 class TTLCache:
@@ -88,6 +91,9 @@ class TTLCache:
 
 
 class CacheMediaType(StrEnum):
+    LIVE_PHOTO = "live_photo"
+    AUDIO = "audio"
+    VOICE = "voice"
     PHOTO = "photo"
     VIDEO = "video"
     ANIMATION = "animation"
@@ -103,6 +109,20 @@ class CacheMedia(BaseModel):
     type: CacheMediaType
     file_id: str
     cover_file_id: str | None = None
+    video_file_id: str | None = None
+    asset_key: str = ""
+    width: int = 0
+    height: int = 0
+    duration: float = 0
+    size_bytes: int = 0
+    native_error: str | None = None
+    references: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_pair(self) -> "CacheMedia":
+        if self.type == CacheMediaType.LIVE_PHOTO and (not self.file_id or not self.video_file_id):
+            raise ValueError("live_photo_pair_missing")
+        return self
 
 
 class CacheEntry(BaseModel):
@@ -110,6 +130,7 @@ class CacheEntry(BaseModel):
     media: list[CacheMedia] | None = None
     telegraph_url: str | None = None
     rich: bool = False
+    media_version: int = MEDIA_CACHE_VERSION
 
 
 class PersistentCache:
@@ -150,6 +171,13 @@ class PersistentCache:
                 entry: CacheEntry = CacheEntry.model_validate(cache.entry_json)
             except Exception as e:
                 self.logger.warning(f"缓存内容无效, 已删除: key={url}, error={e}")
+                await repo.remove(cache)
+                return None
+
+            if entry.media and (
+                "media_version" not in entry.model_fields_set or entry.media_version != MEDIA_CACHE_VERSION
+            ):
+                self.logger.debug(f"媒体缓存版本过期, 已删除: key={url}")
                 await repo.remove(cache)
                 return None
 

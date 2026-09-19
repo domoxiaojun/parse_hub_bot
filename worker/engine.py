@@ -15,8 +15,9 @@ from typing import Any
 from parsehub.types import AniFile, ImageFile, LivePhotoFile, VideoFile
 from parsehub.utils.helpers import match_url
 
-from services import CacheMediaType, ParseService, PipelineResult
-from services.media import ProcessedMedia, resolve_media_info
+from delivery.assets import worker_cached_media
+from services import ParseService, PipelineResult
+from services.media import ProcessedMedia, resolve_live_photo_video_info, resolve_media_info
 from utils.helpers import pack_dir_to_tar_gz
 from worker.security import EngineError, validate_url
 from worker.upstream_adapter import OriginalPipelineAdapter, OriginalPipelineError, UpstreamOutput
@@ -183,17 +184,8 @@ class ParseHubEngine:
         )
         if cached.telegraph_url:
             result["telegraphUrl"] = cached.telegraph_url
-        result["media"] = [
-            self._cached_media(media.type, media.file_id, media.cover_file_id) for media in cached.media or []
-        ]
+        result["media"] = [worker_cached_media(media) for media in cached.media or []]
         return result
-
-    @staticmethod
-    def _cached_media(kind: CacheMediaType, file_id: str, cover_file_id: str | None) -> dict[str, Any]:
-        media = {"type": kind.value, "telegramFileId": file_id}
-        if cover_file_id:
-            media["telegramCoverFileId"] = cover_file_id
-        return media
 
     async def _adapt_pipeline(
         self,
@@ -306,7 +298,8 @@ class ParseHubEngine:
     ) -> None:
         source = processed.source
         assert isinstance(source, LivePhotoFile)
-        video_path = Path(source.video_path) if source.video_path else None
+        video_path = (processed.motion.path if processed.motion
+                      else Path(source.video_path) if source.video_path else None)
         photos = []
         for path in photo_paths:
             width, height, _ = self._media_info(processed, path)
@@ -314,15 +307,18 @@ class ParseHubEngine:
         if video_path is None:
             result["media"].extend(photos)
             return
+        video_width, video_height, video_duration = resolve_live_photo_video_info(processed)
         video = self._local_media(
             result,
             video_path,
             "video",
-            width=int(getattr(source, "width", 0) or 0),
-            height=int(getattr(source, "height", 0) or 0),
-            duration=int(getattr(source, "duration", 0) or 0),
+            width=video_width,
+            height=video_height,
+            duration=video_duration,
         )
-        if len(photos) == 1 and video["sizeBytes"] <= 10 * 1024 * 1024 and video.get("durationSeconds", 0) <= 10:
+        # Rich delivery represents the pair as adjacent photo/video blocks, so native
+        # sendLivePhoto's 10-second/10-MiB limits no longer apply to the pairing contract.
+        if len(photos) == 1:
             photo = photos[0]
             result["media"].append(
                 {
@@ -335,9 +331,11 @@ class ParseHubEngine:
                     "videoMimeType": video["mimeType"],
                     "filename": photo["filename"],
                     "videoFilename": video["filename"],
-                    "width": photo.get("width") or video.get("width", 0),
-                    "height": photo.get("height") or video.get("height", 0),
-                    "durationSeconds": video.get("durationSeconds", 0),
+                    "width": video.get("width", 0),
+                    "height": video.get("height", 0),
+                    "durationSeconds": (processed.motion.duration if processed.motion
+                                        else video.get("durationSeconds", 0)),
+                    "nativeError": processed.motion.native_error if processed.motion else None,
                 }
             )
         else:

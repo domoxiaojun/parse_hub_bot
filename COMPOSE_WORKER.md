@@ -6,7 +6,7 @@
 
 直接使用原.env和data/config/platform_config.yaml，不另建.env.worker或data/worker。已有.env请勿覆盖，只补充WORKER_SERVICE_KEY（至少32字符）。首次安装才将.env.example复制为.env。
 
-Token必须与gptbot目标账号相同。API_ID/API_HASH、BOT_PROXY及原目录配置继续保留。Worker使用独立持久的data/sessions/worker_sender_<BotID>.session，并以no_updates=True运行发送客户端；直出请求由Worker组装上传并发送RichMessage。原bot_<BotID>.session保持不变。旧bot.py不要同时处理同一消息。
+Token必须与gptbot目标账号相同。API_ID/API_HASH、BOT_PROXY及原目录配置继续保留。Worker使用独立持久的data/sessions/worker_sender_<BotID>.session，并以no_updates=True运行发送客户端；preview直出由Worker组装并发送RichMessage，raw/zip保留原文件Document。原bot_<BotID>.session保持不变。旧bot.py不要同时处理同一消息。
 
 Compose挂载原目录：
 
@@ -80,19 +80,31 @@ Worker运行原`ParsePipeline`：例如downloads/作品标题/作品标题.mp4�
 
 ## 维护与清理缓存
 
-内置维护脚本只清理数据库登记的落盘文件，不会误删非 Worker 历史文件。脚本会申请与 Worker 进程相同的数据目录锁：Worker 运行时执行会直接拒绝并退出码 1，因此需要先停止服务，用一次性容器运行脚本，再启动：
+内置维护脚本只清理数据库登记的落盘文件，不会误删非 Worker 历史文件。
+
+### 方式 1：免停机在线清理（推荐，直接 exec）
+在容器正常运行中直接调用，加上 `--online` 参数可跳过独占文件锁，安全清理无活跃租约的已完成缓存：
 
 ```sh
+# 在线全量清理
+docker compose -f compose.worker.yaml exec parsehub-worker python -m worker.clean_cache --online
+
+# 在线演练预览
+docker compose -f compose.worker.yaml exec parsehub-worker python -m worker.clean_cache --online --dry-run
+```
+
+### 方式 2：离线停机清理（使用 run 一次性容器）
+若容器已停止，不能使用 `exec`，请使用 `run --rm` 启动临时容器执行：
+
+```sh
+# 停止 Worker
 docker compose -f compose.worker.yaml stop parsehub-worker
 
-# 查看当前缓存占用与条目统计
-docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --stats
-
-# 演练预览（仅查看将清理的记录与容量，不实际执行删除）
-docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --dry-run
-
-# 快速全量清理（默认跳过未到期的活跃租约）
+# 启动临时容器执行全量清理
 docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache
+
+# 启动临时容器仅演练预览
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --dry-run
 
 # 强制全量清理（连同未到期租约一并清空）
 docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --force

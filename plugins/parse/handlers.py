@@ -2,9 +2,8 @@ import asyncio
 import re
 from dataclasses import replace
 
-from parsehub.types import AniRef, RichTextParseResult
 from pyrogram import Client, filters
-from pyrogram.types import InputRichMessage, Message
+from pyrogram.types import Message
 
 from core import bs
 from db import get_session
@@ -17,14 +16,14 @@ from plugins.filters import (
     platform_filter,
     via_me_filter,
 )
-from plugins.helpers import build_caption, create_richtext_telegraph, format_label
-from plugins.parse.context import GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD, ParseOptions, ParseRequest
+from plugins.helpers import build_caption, format_label
+from plugins.parse.context import ParseOptions, ParseRequest
 from plugins.parse.reporters import MessageStatusReporter, disable_progress_on_report_forbidden
-from plugins.parse.sender import MessageSender, build_gif_button, send_cached, send_media, send_raw, send_zip
+from plugins.parse.sender import MessageSender, send_cached, send_media, send_raw, send_zip
 from repo.settings import ParseMode
-from services import CacheEntry, CacheParseResult, ParsePipeline, ParseService, SettingsService, UserService
+from services import ParsePipeline, ParseService, SettingsService, UserService
 from services.cache import parse_cache, persistent_cache
-from utils.helpers import to_list, with_request_id
+from utils.helpers import with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
 
 logger = logger.bind(name="Parse")
@@ -175,7 +174,7 @@ async def handle_parse(req: ParseRequest) -> bool:
         parse_result=cached_parse_result,
         singleflight=options.singleflight,
         skip_media_processing=options.skip_media_processing,
-        gif_only_skip_download_count_threshold=options.gif_only_skip_download_count_threshold,
+        gif_only_skip_download_count_threshold=0,
         save_metadata=options.save_metadata,
         t=req.t_,
     ) as pipeline:
@@ -201,75 +200,7 @@ async def handle_parse(req: ParseRequest) -> bool:
         parse_result = result.parse_result
         await parse_cache.set(raw_url, parse_result)
 
-        if isinstance(parse_result, RichTextParseResult):
-            # 富文本发送
-            if req.config.rich_mode:
-                await sender.typing()
-                caption = build_caption(parse_result, config=req.config, custom_content=req.custom_content, rich=True)
-                if req.chat_id:
-                    await sender.rich_message(
-                        rich_message=InputRichMessage(markdown=caption),
-                    )
-                    await persistent_cache.set(
-                        raw_url,
-                        CacheEntry(
-                            parse_result=CacheParseResult(
-                                title=parse_result.title, content=parse_result.markdown_content
-                            ),
-                            rich=True,
-                        ),
-                    )
-                    await reporter.dismiss()
-                    return True
-
-            # Telegraph 发送
-            logger.debug(f"富文本类型, 创建 Telegraph 页面: title={parse_result.title}")
-            await sender.typing()
-            ph_url = await create_richtext_telegraph(req.cli, parse_result)
-            logger.debug(f"Telegraph 页面创建完成: {ph_url}")
-            caption = build_caption(
-                parse_result,
-                ph_url,
-                config=req.config,
-                custom_content=req.custom_content,
-            )
-            await sender.text_with_preview_above(caption)
-            await persistent_cache.set(
-                raw_url,
-                CacheEntry(
-                    parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content),
-                    telegraph_url=ph_url,
-                ),
-            )
-            await reporter.dismiss()
-            return True
-
-        caption = build_caption(
-            parse_result,
-            config=req.config,
-            custom_content=req.custom_content,
-        )
-        gif_only = all(isinstance(i, AniRef) for i in to_list(parse_result.media))
-        if (
-            req.mode == ParseMode.PREVIEW
-            and gif_only
-            and len(to_list(parse_result.media)) > GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD
-        ):
-            await sender.typing()
-            await sender.text_no_preview(caption, reply_markup=build_gif_button(to_list(parse_result.media)))
-            await reporter.dismiss()
-            return True
-
-        if not result.processed_list:
-            logger.debug("无媒体文件, 仅发送文本")
-            await sender.typing()
-            await sender.text_no_preview(caption)
-            cache_entry = CacheEntry(
-                parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content)
-            )
-            await persistent_cache.set(raw_url, cache_entry)
-            await reporter.dismiss()
-            return True
+        caption = build_caption(parse_result, config=req.config, custom_content=req.custom_content)
 
         if req.mode == ParseMode.RAW:
             await send_raw(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)
@@ -281,7 +212,8 @@ async def handle_parse(req: ParseRequest) -> bool:
         logger.debug(f"开始上传媒体: media_count={len(result.processed_list)}")
         await reporter.report(req.t_("上 传 中..."))
         try:
-            media_cache_entry = await send_media(sender, parse_result, result.processed_list, caption, _t=req.t_)
+            media_cache_entry = await send_media(sender, parse_result, result.processed_list, caption,
+                                                _t=req.t_, custom_content=req.custom_content)
             if media_cache_entry:
                 await persistent_cache.set(raw_url, media_cache_entry)
             await reporter.dismiss()

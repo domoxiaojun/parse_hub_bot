@@ -155,6 +155,7 @@ def test_cli_refuses_while_worker_holds_the_data_lock(tmp_path: Path, monkeypatc
     fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         assert main(["--stats"]) == 1
+        assert main(["--stats", "--online"]) == 0
     finally:
         held.close()
     assert main(["--stats"]) == 0

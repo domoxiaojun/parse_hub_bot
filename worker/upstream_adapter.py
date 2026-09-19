@@ -92,8 +92,7 @@ class OriginalPipelineAdapter:
             parse_result=parsed,
             singleflight=False,  # Jobs already provides per-URL singleflight.
             skip_media_processing=output_mode in {"raw", "zip"},
-            # The interactive bot replaces skipped GIF galleries with link buttons; the
-            # Worker has no such fallback, so it must always download.
+            # The shared envelope must contain every final asset, including GIF galleries.
             gif_only_skip_download_count_threshold=0,
             richtext_skip_download=True,
             save_metadata=output_mode == "zip",

@@ -37,6 +37,7 @@ class Store:
             CREATE INDEX IF NOT EXISTS worker_cache_key ON worker_cache(key);
             CREATE TABLE IF NOT EXISTS worker_aliases (alias TEXT PRIMARY KEY, key TEXT);
             CREATE TABLE IF NOT EXISTS worker_leases (id TEXT PRIMARY KEY, cache_id TEXT, expires REAL);
+            CREATE TABLE IF NOT EXISTS worker_uploads (key TEXT PRIMARY KEY, payload TEXT, expires REAL);
             CREATE TABLE IF NOT EXISTS worker_owned_paths (
               path TEXT PRIMARY KEY, kind TEXT NOT NULL, owner TEXT NOT NULL, cache_id TEXT);
         """)
@@ -47,6 +48,16 @@ class Store:
             self.db.commit()
         if recover:
             self.recover()
+
+    def get_upload(self, key: str) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT payload FROM worker_uploads WHERE key=? AND expires>?",
+                              (key, time.time())).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_upload(self, key: str, value: dict[str, Any]) -> None:
+        self.db.execute("INSERT OR REPLACE INTO worker_uploads VALUES (?,?,?)",
+                        (key, json.dumps(value), time.time() + TTL))
+        self.db.commit()
 
     def recover(self) -> None:
         """Mark work left by a dead Worker; only the process that owns the data lock may call this."""
@@ -223,6 +234,7 @@ class Store:
     def cleanup(self) -> None:
         now = time.time()
         self.db.execute("DELETE FROM worker_leases WHERE expires<=?", (now,))
+        self.db.execute("DELETE FROM worker_uploads WHERE expires<=?", (now,))
         rows = self.db.execute("SELECT * FROM worker_cache ORDER BY accessed ASC").fetchall()
         total = sum(row["bytes"] for row in rows)
         for row in rows:
@@ -238,6 +250,8 @@ class Store:
                 continue
             self.db.execute("DELETE FROM worker_cache WHERE id=?", (row["id"],))
             total -= row["bytes"]
-        self.db.execute("DELETE FROM worker_jobs WHERE updated<?", (now - TTL,))
+        # Content TTL must not erase acknowledged/uncertain delivery history and enable replays.
+        self.db.execute("DELETE FROM worker_jobs WHERE updated<? AND json_type(payload, '$.delivery') IS NULL",
+                        (now - TTL,))
         self.db.execute("DELETE FROM worker_aliases WHERE key NOT IN (SELECT key FROM worker_cache)")
         self.db.commit()
