@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -29,6 +30,19 @@ from utils.helpers import pack_dir_to_tar_gz, to_list
 
 logger = logger.bind(name="ParseSender")
 MAX_RETRIES = 5
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def track_background(task: asyncio.Task[Any]) -> None:
+    """Keep a strong reference and swallow the result so fire-and-forget tasks are never GC'd or left unretrieved."""
+    _background_tasks.add(task)
+
+    def done(t: asyncio.Task[Any]) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.debug(f"后台任务失败: {type(t.exception()).__name__}: {t.exception()}")
+
+    task.add_done_callback(done)
 
 
 class SendFailed(RuntimeError):
@@ -63,7 +77,7 @@ class MessageSender:
                         f"定时删除消息失败: chat_id={message.chat and message.chat.id}, msg_id={message.id}, error={e}"
                     )
 
-        asyncio.get_running_loop().create_task(fn())
+        track_background(asyncio.get_running_loop().create_task(fn()))
 
     async def _send_and_schedule_delete[T](self, send_coro_fn: Callable[[], Awaitable[T]]) -> T:
         sent = await self._send(send_coro_fn)
@@ -143,7 +157,8 @@ def envelope_for(sender: MessageSender, parse_result: Any, assets: tuple[MediaAs
     source = str(getattr(parse_result, "raw_url", "") or "")
     return DeliveryEnvelope(dest, source,
         "" if sender.config.hide_title else str(parse_result.title or ""),
-        custom_content or ("" if sender.config.hide_desc else str(parse_result.content or "")),
+        "\n\n".join(filter(None, ["" if sender.config.hide_desc else str(parse_result.content or ""),
+                                  custom_content])),
         "" if sender.config.hide_source else source, reading_url, assets)
 
 
@@ -154,33 +169,46 @@ async def send_content(sender: MessageSender, envelope: DeliveryEnvelope, mode: 
 
 
 async def send_raw(sender: MessageSender, result: PipelineResult, reporter: StatusReporter, *,
-                   _t: PreLocaleSelector, custom_content: str = "") -> None:
+                   _t: PreLocaleSelector, custom_content: str = "") -> bool:
     try:
         assets = pipeline_assets(result.processed_list, str(result.parse_result.raw_url), raw=True)
         await send_content(sender, envelope_for(sender, result.parse_result, assets, custom_content), "raw")
-        await reporter.dismiss()
+    except Exception as e:
+        logger.opt(exception=e).debug("详细堆栈")
+        logger.error(f"Raw 模式上传失败: {type(e).__name__}: {e}")
+        await reporter.report_error(_t("上传"), e)
+        return False
     finally:
         result.cleanup()
+    await reporter.dismiss()
+    return True
 
 
 async def send_zip(sender: MessageSender, result: PipelineResult, reporter: StatusReporter, *,
-                   _t: PreLocaleSelector, custom_content: str = "") -> None:
-    if result.output_dir is None:
-        raise ValueError("missing_archive_directory")
-    archive = await asyncio.to_thread(pack_dir_to_tar_gz, result.output_dir)
+                   _t: PreLocaleSelector, custom_content: str = "") -> bool:
+    archive: Path | None = None
     try:
+        if result.output_dir is None:
+            raise ValueError("missing_archive_directory")
+        archive = await asyncio.to_thread(pack_dir_to_tar_gz, result.output_dir)
         asset = MediaAsset(asset_key(str(result.parse_result.raw_url), 0, [archive]), "document", archive,
                            size=archive.stat().st_size)
         await send_content(sender, envelope_for(sender, result.parse_result, (asset,), custom_content), "zip")
-        await reporter.dismiss()
+    except Exception as e:
+        logger.opt(exception=e).debug("详细堆栈")
+        logger.error(f"Zip 模式上传失败: {type(e).__name__}: {e}")
+        await reporter.report_error(_t("上传"), e)
+        return False
     finally:
         result.cleanup()
-        if not bs.debug_skip_cleanup:
+        if archive is not None and not bs.debug_skip_cleanup:
             archive.unlink(missing_ok=True)
+    await reporter.dismiss()
+    return True
 
 
 async def send_media(sender: MessageSender, parse_result: AnyParseResult,
-                     processed_list: list[ProcessedMedia], caption: str, *, _t: PreLocaleSelector,
+                     processed_list: list[ProcessedMedia], *, _t: PreLocaleSelector,
                      custom_content: str = "") -> CacheEntry | None:
     assets = pipeline_assets(processed_list, str(parse_result.raw_url))
     envelope = envelope_for(sender, parse_result, assets, custom_content)

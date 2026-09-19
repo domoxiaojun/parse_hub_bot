@@ -16,7 +16,7 @@ from plugins.filters import (
     platform_filter,
     via_me_filter,
 )
-from plugins.helpers import build_caption, format_label
+from plugins.helpers import format_label
 from plugins.parse.context import ParseOptions, ParseRequest
 from plugins.parse.reporters import MessageStatusReporter, disable_progress_on_report_forbidden
 from plugins.parse.sender import MessageSender, send_cached, send_media, send_raw, send_zip
@@ -174,7 +174,6 @@ async def handle_parse(req: ParseRequest) -> bool:
         parse_result=cached_parse_result,
         singleflight=options.singleflight,
         skip_media_processing=options.skip_media_processing,
-        gif_only_skip_download_count_threshold=0,
         save_metadata=options.save_metadata,
         t=req.t_,
     ) as pipeline:
@@ -200,19 +199,15 @@ async def handle_parse(req: ParseRequest) -> bool:
         parse_result = result.parse_result
         await parse_cache.set(raw_url, parse_result)
 
-        caption = build_caption(parse_result, config=req.config, custom_content=req.custom_content)
-
         if req.mode == ParseMode.RAW:
-            await send_raw(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)
-            return True
+            return await send_raw(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)
         if req.mode == ParseMode.ZIP:
-            await send_zip(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)
-            return True
+            return await send_zip(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)
 
         logger.debug(f"开始上传媒体: media_count={len(result.processed_list)}")
         await reporter.report(req.t_("上 传 中..."))
         try:
-            media_cache_entry = await send_media(sender, parse_result, result.processed_list, caption,
+            media_cache_entry = await send_media(sender, parse_result, result.processed_list,
                                                 _t=req.t_, custom_content=req.custom_content)
             if media_cache_entry:
                 await persistent_cache.set(raw_url, media_cache_entry)

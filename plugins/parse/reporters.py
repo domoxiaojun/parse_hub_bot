@@ -12,7 +12,7 @@ from db import get_session
 from log import logger
 from plugins.context import get_config_target
 from plugins.helpers import format_label
-from plugins.parse.sender import MessageSender, SendFailed
+from plugins.parse.sender import MessageSender, SendFailed, track_background
 from repo.settings import SettingsConfig
 from services import SettingsService, StatusReporter
 
@@ -71,12 +71,15 @@ class MessageStatusReporter(StatusReporter):
             await asyncio.sleep(15)
             await self.dismiss()
 
-        loop = asyncio.get_running_loop()
-        loop.create_task(fn())
+        track_background(asyncio.get_running_loop().create_task(fn()))
 
     async def dismiss(self) -> None:
         if self._msg:
-            await self._msg.delete()
+            try:
+                await self._msg.delete()
+            except Exception as e:
+                logger.debug(f"状态消息删除失败: {type(e).__name__}")
+            self._msg = None
 
     async def _edit_text(self, text: str, **kwargs: Any) -> None:
         try:
@@ -149,8 +152,7 @@ class InlineStatusReporter(StatusReporter):
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
 
-        loop = asyncio.get_running_loop()
-        loop.create_task(fn())
+        track_background(asyncio.get_running_loop().create_task(fn()))
 
     async def _edit_inline_text(self, **kwargs: Any) -> None:
         try:

@@ -14,6 +14,10 @@ from worker.store import Store
 logger = logging.getLogger("parsehub.worker")
 
 
+# Historical cache-key prefixes; the last entry is what Jobs.key() produces today.
+KEY_VERSIONS = ("v7-original-pipeline", "v8-single-rich", "v9-envelope")
+
+
 class Jobs:
     def __init__(self, engine: Any, store: Store, bot_id: str, sender: Any = None) -> None:
         self.engine = engine
@@ -75,7 +79,7 @@ class Jobs:
     def key(url: str, request: JobInput) -> str:
         transport = "direct" if request.delivery is not None else "files"
         return hashlib.sha256(
-            f"v9-envelope:{transport}:{request.accountId}:{request.outputMode}:{url}".encode()
+            f"{KEY_VERSIONS[-1]}:{transport}:{request.accountId}:{request.outputMode}:{url}".encode()
         ).hexdigest()
 
     async def _prepare(self, url: str, request: JobInput, config: dict[str, Any], key: str,

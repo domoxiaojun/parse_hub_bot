@@ -66,8 +66,7 @@ async def inline_result_download(cli: Client, chosen: ChosenInlineResult) -> Non
                                         url, cached.telegraph_url or "", cached_assets(cached.media or []))
             await deliver(cli, envelope, chosen.inline_message_id)
             return
-        with ParsePipeline(chosen.query, url, reporter, singleflight=False,
-                           gif_only_skip_download_count_threshold=0, t=t_[lang]) as pipeline:
+        with ParsePipeline(chosen.query, url, reporter, singleflight=False, t=t_[lang]) as pipeline:
             result = await pipeline.run()
             if result is None:
                 return

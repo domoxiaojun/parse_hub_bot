@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy import make_url
 
+from worker.jobs import KEY_VERSIONS
 from worker.store import Store
 
 
@@ -45,7 +46,7 @@ def candidate_keys(url: str, account_id: str | None) -> list[str]:
         return []
     return [
         hashlib.sha256(f"{version}:{transport}:{account_id}:{mode}:{url}".encode()).hexdigest()
-        for version in ("v7-original-pipeline", "v8-single-rich", "v9-envelope")
+        for version in KEY_VERSIONS
         for transport in ("direct", "files")
         for mode in ("preview", "raw", "zip")
     ]
@@ -268,11 +269,11 @@ def main(args: list[str] | None = None) -> int:
         return 0
 
     lock = None
+    account_id = resolve_account_id()
     if not opts.online:
         # Share the running Worker's data lock: recovery and purges must never race a live process.
         sessions = data_path / "sessions"
         sessions.mkdir(parents=True, exist_ok=True)
-        account_id = resolve_account_id()
         lock_name = f"bot_{account_id}.worker.lock" if account_id else "worker.lock"
         lock_file = (sessions / lock_name).open("a")
         try:
@@ -281,7 +282,7 @@ def main(args: list[str] | None = None) -> int:
         except BlockingIOError:
             lock_file.close()
             print("[Worker Cache Cleaner] Worker 正在运行。如需不停机在线清理，请附加 --online 参数：")
-            print("  docker exec -it parsehub-parsehub-worker-1 python -m worker.clean_cache --online")
+            print("  docker compose -f compose.worker.yaml exec parsehub-worker python -m worker.clean_cache --online")
             print("或使用 run 启动临时容器执行离线清理：")
             print("  docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache")
             return 1

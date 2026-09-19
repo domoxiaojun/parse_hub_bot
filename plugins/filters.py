@@ -26,7 +26,7 @@ def platform_filter(use_config: bool = False) -> filters.Filter:
             case InlineQuery():
                 t = update.query
 
-        if not (platform := ParseService().parser.get_platform(t)):
+        if not (platform := ParseService().parser.get_platform(t or "")):
             return False
 
         if flt.use_config is False:
@@ -78,7 +78,7 @@ async def _allow_channel_auto_forward_parse_filter(_: Any, cli: Client, update: 
     except Exception:
         return True
 
-    if not (platform := ParseService().parser.get_platform(update.text)):
+    if not (platform := ParseService().parser.get_platform(update.text or update.caption or "")):
         return False
 
     async with get_session() as session:

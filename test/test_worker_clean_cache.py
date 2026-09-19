@@ -141,6 +141,26 @@ def test_cli_main_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         reopened.close()
 
 
+def test_cli_online_dry_run_and_purge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_file = tmp_path / "test.db"
+    store = Store(tmp_path, database_path=db_file, files_path=tmp_path / "downloads")
+    setup_sample_cache(store)
+    store.close()
+    monkeypatch.setattr(
+        "worker.clean_cache.resolve_store_paths",
+        lambda: (tmp_path, tmp_path / "downloads", db_file, 1024**3),
+    )
+    monkeypatch.setattr("worker.clean_cache.resolve_account_id", lambda: "123")
+
+    assert main(["--online", "--dry-run"]) == 0
+    assert main(["--online"]) == 0
+    reopened = Store(tmp_path, database_path=db_file, files_path=tmp_path / "downloads")
+    try:
+        assert get_cache_stats(reopened).total_entries == 0
+    finally:
+        reopened.close()
+
+
 def test_cli_refuses_while_worker_holds_the_data_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import fcntl
 

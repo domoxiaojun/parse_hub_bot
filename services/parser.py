@@ -47,8 +47,8 @@ class ParseService:
             except Exception as e:
                 logger.warning(f"解析失败, attempt={attempt}/{max_retries}, err={e}")
                 if attempt >= max_retries:
-                    raise Exception(e) from e
-        raise
+                    raise
+        raise RuntimeError("unreachable")
 
     async def get_raw_url(self, url: str, clean_all: bool = True) -> str:
         p = self.get_platform(url)
@@ -64,5 +64,5 @@ class ParseService:
             except Exception as e:
                 logger.warning(f"获取原始 URL 失败, attempt={attempt}/{max_retries}, err={e}")
                 if attempt >= max_retries:
-                    raise Exception(e) from e
-        raise
+                    raise
+        raise RuntimeError("unreachable")

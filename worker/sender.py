@@ -84,6 +84,7 @@ class TelegramSender:
             receipt.update(messageIds=[mid for state in tasks for mid in state.get("messageIds", [])],
                            albums=[a for state in tasks for a in state.get("albums", [])],
                            kind=(tasks[0].get("kind") if len(tasks) == 1 else "multiple"),
+                           totalFrames=sum(s.get("totalFrames", 0) for s in tasks),
                            completedFrames=sum(s.get("completedFrames", 0) for s in tasks),
                            mediaCount=sum(s.get("mediaCount", 0) for s in tasks),
                            inFlight=any(s.get("inFlight", False) for s in tasks),
@@ -98,7 +99,8 @@ class TelegramSender:
             try:
                 sent = await send_envelope(envelope, transport, tasks[index], settle)
             except asyncio.CancelledError:
-                receipt["status"] = "unknown" if receipt.get("inFlight") else "cancelled"
+                receipt["status"] = ("unknown" if receipt.get("inFlight") else
+                                     "partial" if receipt.get("completedFrames") else "cancelled")
                 settle()
                 raise
             if sent.status != "sent":

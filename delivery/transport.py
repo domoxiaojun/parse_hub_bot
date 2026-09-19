@@ -29,14 +29,6 @@ class MemoryReferences:
         self.values[key] = value
 
 
-class BotRejected(Exception):
-    def __init__(self, code: int, retry_after: int = 0, reference_expired: bool = False):
-        self.code = code
-        self.retry_after = retry_after
-        self.reference_expired = reference_expired
-        super().__init__(f"bot_api_{code}")
-
-
 class UploadFailure(DeliveryError):
     """A privacy-safe upload stage plus the original exception type/identifier."""
 

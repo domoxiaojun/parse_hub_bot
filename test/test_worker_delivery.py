@@ -200,7 +200,8 @@ def test_worker_preview_restores_rich_video_platform_footer_and_source_link():
             job, MessageDelivery(surface="message", chatId="123"), None, lambda: None)
         assert job["delivery"]["status"] == "sent" and job["delivery"]["kind"] == "rich"
         blocks = transport.rich_messages[0].blocks
-        assert isinstance(blocks[0], types.InputRichBlockSectionHeading) and blocks[0].text == "标题" and blocks[0].size == 4
+        assert isinstance(blocks[0], types.InputRichBlockSectionHeading)
+        assert blocks[0].text == "标题" and blocks[0].size == 4
         video = next(block.video for block in blocks if isinstance(block, types.InputRichBlockVideo))
         assert (video.width, video.height, video.duration) == (1080, 1920, 24)
         footer = blocks[-1]
@@ -341,6 +342,42 @@ def test_cancelled_visible_request_is_unknown_and_not_replayed():
         await send_envelope(envelope([live()]), t, state, lambda: None)
         assert len(t.sent) == 1
     asyncio.run(run())
+
+def test_worker_cancel_after_confirmed_result_is_partial():
+    async def run():
+        transport = FakeTransport()
+        job = {
+            "id": "job",
+            "results": [
+                {"access": "public", "platform": "xhs", "canonicalUrl": "https://example.com/1",
+                 "title": "one", "plainContent": "one", "media": []},
+                {"access": "public", "platform": "xhs", "canonicalUrl": "https://example.com/2",
+                 "title": "two", "plainContent": "two", "media": [
+                     {"type": "video", "telegramFileId": "video", "width": 100,
+                      "height": 100, "durationSeconds": 1, "sizeBytes": 10},
+                 ]},
+            ],
+            "delivery": {"status": "pending"},
+        }
+        original_upload = transport.upload
+        calls = 0
+
+        async def cancel_on_second_upload(asset, dest, *, rich, force=False):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise asyncio.CancelledError
+            return await original_upload(asset, dest, rich=rich, force=force)
+
+        transport.upload = cancel_on_second_upload
+        with pytest.raises(asyncio.CancelledError):
+            await TelegramSender(SimpleNamespace(), transport=transport).deliver(
+                job, MessageDelivery(surface="message", chatId="123"), None, lambda: None)
+        assert job["delivery"]["status"] == "partial"
+        assert job["delivery"]["messageIds"]
+
+    asyncio.run(run())
+
 
 
 @pytest.mark.parametrize("status,in_flight,expected", [("sent", False, "sent"),

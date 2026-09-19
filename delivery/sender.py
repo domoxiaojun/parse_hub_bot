@@ -9,7 +9,7 @@ from typing import Any, cast
 from pyrogram.errors import FloodWait, RPCError, SlowmodeWait
 
 from delivery.models import DeliveryEnvelope, DeliveryError, SendKind, SendResult, plan
-from delivery.transport import BotRejected, TelegramTransport, UploadFailure
+from delivery.transport import TelegramTransport, UploadFailure
 
 logger = logging.getLogger("parsehub.delivery")
 
@@ -19,8 +19,7 @@ def _error_fields(error: BaseException) -> tuple[str, str, str, str]:
     phase = error.phase if isinstance(error, UploadFailure) else "transport_upload"
     error_type = error.cause_type if isinstance(error, UploadFailure) else type(error).__name__
     rpc = error.rpc if isinstance(error, UploadFailure) else str(getattr(error, "ID", "") or "none")
-    code = (str(error) if isinstance(error, DeliveryError)
-            else str(error.code) if isinstance(error, BotRejected) else "none")
+    code = str(error) if isinstance(error, DeliveryError) else "none"
     return phase, error_type, rpc, code
 
 
@@ -116,16 +115,8 @@ async def send_envelope(envelope: DeliveryEnvelope, transport: TelegramTransport
                         if len(message_ids) != max(1, len(batch.assets)) or len(set(message_ids)) != len(message_ids):
                             raise OSError("missing_delivery_ack")
                     break
-                except (FloodWait, SlowmodeWait, BotRejected) as error:
-                    if isinstance(error, BotRejected) and error.reference_expired and attempt == 0:
-                        state["inFlight"] = False
-                        checkpoint()
-                        for member, value in enumerate(uploaded):
-                            uploaded[member] = await transport.refresh(value, envelope.dest)
-                        continue
-                    if isinstance(error, BotRejected) and error.code != 429:
-                        raise
-                    delay = error.retry_after if isinstance(error, BotRejected) else error.value
+                except (FloodWait, SlowmodeWait) as error:
+                    delay = error.value
                     if attempt == 2 or not isinstance(delay, int | float) or not 0 <= delay <= 60:
                         raise
                     state["inFlight"] = False
@@ -168,8 +159,7 @@ async def send_envelope(envelope: DeliveryEnvelope, transport: TelegramTransport
             checkpoint()
             raise
         except Exception as error:
-            known = (isinstance(error, (RPCError, DeliveryError))
-                     or isinstance(error, BotRejected) and error.code < 500 or not state.get("inFlight"))
+            known = isinstance(error, (RPCError, DeliveryError)) or not state.get("inFlight")
             status = ("partial" if state.get("completedFrames") else "failed") if known else "unknown"
             state.update(status=status, inFlight=not known, error={
                 "code": str(error) if isinstance(error, DeliveryError) else
