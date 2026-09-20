@@ -13,3 +13,5 @@ __pycache__/
 .env.*
 !.env.example
 .DS_Store
+/www.youtube.com_cookies*.txt
+/www.youtube.com_cookies*.json
