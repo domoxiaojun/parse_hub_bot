@@ -5,8 +5,8 @@ services:
     image: parsehub-worker:local
     build:
       context: .
-      dockerfile: Dockerfile
-    command: ["python", "-m", "worker"]
+      dockerfile: deploy/Dockerfile
+    command: ["python", "-m", "ext.worker"]
     init: true
     restart: unless-stopped
     stop_grace_period: 45s
@@ -25,7 +25,7 @@ services:
     networks:
       - parsehub
     healthcheck:
-      test: ["CMD", "python", "-m", "worker.healthcheck"]
+      test: ["CMD", "python", "-m", "ext.worker.healthcheck"]
       interval: 30s
       timeout: 10s
       start_period: 60s

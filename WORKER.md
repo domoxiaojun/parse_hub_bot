@@ -2,7 +2,7 @@
 
 ## Fork 分支约定
 
-本 Fork 的默认开发分支为 `worker`，包含 Worker 以及定制的消息显示；`main` 只同步原作者的 `upstream/main`。`origin` 指向自己的 Fork，默认推送目标为 `origin`。
+本 Fork 的默认开发分支为 `worker`，包含 Worker 以及定制的消息显示；`main` 只同步原作者的 `upstream/main`。全部 Fork 代码位于 `ext/`，上游目录与 `upstream/main` 逐字节一致，布局与挂钩清单见 `ext/README.md`。`origin` 指向自己的 Fork，默认推送目标为 `origin`。
 
 工作区干净时，按以下步骤同步上游：
 
@@ -14,12 +14,12 @@ git push origin main
 git switch worker
 git merge main
 uv sync --frozen
-uv run pytest test/test_worker_*.py
+uv run pytest            # test/ext/test_upstream_hooks.py 会校验上游目录与挂钩目标
 # 解决冲突并通过检查后，再推送定制分支
 git push origin worker
 ```
 
-ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音显式质量探测由 `services/douyin_quality.py` 对公共 ParseHub 2.2.x 结果提供兜底。
+ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音显式质量探测由 `ext/douyin_quality.py`（经 `ext/hooks.py` 挂到 `ParseService.parse`）对公共 ParseHub 2.2.x 结果提供兜底。
 
 Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
 `ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件；抖音视频结果额外经过本地显式质量兜底。Worker只负责HTTP/幂等/租约、
@@ -49,7 +49,7 @@ Worker直接沿用原项目布局，无需复制成第二套配置：
 不覆写原`cache`表。直出preview会复用原Bot的持久`file_id`缓存，因此命中时不会重新解析、下载或转码；
 文件交接请求不使用该缓存，且两种交付使用不同Worker缓存键。下载目录和文件名由原`ParsePipeline`生成
 （标题目录、重名后缀、原文件名），处理输出沿用同目录`processed`，归档调用原打包函数生成同名`.tar.gz`。
-Worker只登记原流水线已经生成的输出用于租约和清理，未登记历史下载保留。
+Worker只登记原流水线已经生成的输出用于租约和清理，未登记历史下载保留。原`ParsePipeline`固定写入`DOWNLOAD_DIR`，因此Worker的缓存根目录必须是同一路径，启动时校验。
 
 Worker不监听消息；发送客户端使用独立持久会话data/sessions/worker_sender_<BotID>.session、in_memory=False、no_updates=True、plugins=None，不占用原bot_<BotID>.session。旧交互Bot不要同时处理同一消息，避免重复回复。
 
@@ -75,7 +75,7 @@ Worker新增的结构化诊断行不含URL、Cookie、代理凭据和异常原�
 
 ```sh
 uv sync --frozen
-uv run python -m worker
+uv run python -m ext.worker
 ```
 
 原生ffmpeg/ffprobe需要部署环境预先提供。Compose从部署机器当前源码构建，见[Compose部署说明](COMPOSE_WORKER.md)。两个Compose项目独立启动和更新；共享网络是可选连接方式。本机不执行Docker、不构建镜像、不部署。

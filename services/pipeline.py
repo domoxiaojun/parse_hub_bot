@@ -87,7 +87,6 @@ class ParsePipeline:
         gif_only_skip_download_count_threshold: int = 0,
         richtext_skip_download: bool = True,
         save_metadata: bool = False,
-        download_dir: Path | None = None,
         t: PreLocaleSelector,
     ):
         """
@@ -105,7 +104,6 @@ class ParsePipeline:
         self._gif_only_skip_download_count_threshold = gif_only_skip_download_count_threshold
         self._richtext_skip_download = richtext_skip_download
         self._save_metadata = save_metadata
-        self._download_dir = download_dir
         self._t = t
         self._result: PipelineResult | None = None
         self._owns_inflight = False
@@ -213,11 +211,7 @@ class ParsePipeline:
             proxy = pl_cfg.roll_downloader_proxy(p.id)
             logger.debug(f"使用配置: proxy={proxy}")
             return await parse_result.download(
-                self._download_dir or bs.download_dir,
-                callback=progress_cb,
-                callback_args=(),
-                proxy=proxy,
-                save_metadata=self._save_metadata,
+                bs.download_dir, callback=progress_cb, callback_args=(), proxy=proxy, save_metadata=self._save_metadata
             )
 
         download_result = await self._step(
@@ -242,7 +236,6 @@ class ParsePipeline:
             "媒体处理",
             lambda: process_media_files(download_result),
             cleanup=lambda: shutil.rmtree(download_result.output_dir, ignore_errors=True),
-            timeout=20 * 60,
         )
         if maybe_processed_list is None:
             return None

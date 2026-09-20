@@ -12,7 +12,7 @@ from db import get_session
 from log import logger
 from plugins.context import get_config_target
 from plugins.helpers import format_label
-from plugins.parse.sender import MessageSender, SendFailed, track_background
+from plugins.parse.sender import MessageSender
 from repo.settings import SettingsConfig
 from services import SettingsService, StatusReporter
 
@@ -71,15 +71,12 @@ class MessageStatusReporter(StatusReporter):
             await asyncio.sleep(15)
             await self.dismiss()
 
-        track_background(asyncio.get_running_loop().create_task(fn()))
+        loop = asyncio.get_running_loop()
+        loop.create_task(fn())
 
     async def dismiss(self) -> None:
         if self._msg:
-            try:
-                await self._msg.delete()
-            except Exception as e:
-                logger.debug(f"状态消息删除失败: {type(e).__name__}")
-            self._msg = None
+            await self._msg.delete()
 
     async def _edit_text(self, text: str, **kwargs: Any) -> None:
         try:
@@ -92,13 +89,6 @@ class MessageStatusReporter(StatusReporter):
             pass
         except Forbidden as e:
             logger.warning(f"状态消息发送失败, Bot 无权限: {e}")
-            if self._on_forbidden:
-                await self._on_forbidden(self._user_msg, self._config)
-        except SendFailed as e:
-            # MessageSender wraps the original error; a wrapped Forbidden still means no permission.
-            if not isinstance(e.__cause__, Forbidden):
-                raise
-            logger.warning(f"状态消息发送失败, Bot 无权限: {e.__cause__}")
             if self._on_forbidden:
                 await self._on_forbidden(self._user_msg, self._config)
 
@@ -152,7 +142,8 @@ class InlineStatusReporter(StatusReporter):
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
 
-        track_background(asyncio.get_running_loop().create_task(fn()))
+        loop = asyncio.get_running_loop()
+        loop.create_task(fn())
 
     async def _edit_inline_text(self, **kwargs: Any) -> None:
         try:

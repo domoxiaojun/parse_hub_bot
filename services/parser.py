@@ -7,8 +7,6 @@ from parsehub.types import (
 
 from core import pl_cfg
 from log import logger
-from services.douyin_quality import upgrade_douyin_video
-from utils.helpers import mask_proxy
 
 logger = logger.bind(name="ParseService")
 
@@ -22,9 +20,7 @@ class ParseService:
         return cls._instance
 
     def __init__(self) -> None:
-        # __new__ returns the shared instance; do not rebuild every platform parser per call.
-        if not hasattr(self, "parser"):
-            self.parser = ParseHub()
+        self.parser = ParseHub()
 
     def get_platform(self, url: str) -> Platform:
         p = self.parser.get_platform(url)
@@ -41,19 +37,15 @@ class ParseService:
             try:
                 cookie = pl_cfg.roll_cookie(p.id)
                 proxy = pl_cfg.roll_parser_proxy(p.id)
-                logger.debug(f"使用配置: proxy={mask_proxy(proxy)}, cookie={cookie}, attempt={attempt}/{max_retries}")
+                logger.debug(f"使用配置: proxy={proxy}, cookie={cookie}, attempt={attempt}/{max_retries}")
                 pr = await self.parser.parse(url, cookie=cookie.get_secret_value() if cookie else None, proxy=proxy)
-                if p.id == "douyin":
-                    selected_ratio = await upgrade_douyin_video(pr, url, proxy)
-                    if selected_ratio:
-                        logger.info(f"抖音显式质量探测完成: ratio={selected_ratio}")
                 logger.debug(f"解析完成: {pr}")
                 return pr
             except Exception as e:
                 logger.warning(f"解析失败, attempt={attempt}/{max_retries}, err={e}")
                 if attempt >= max_retries:
-                    raise
-        raise RuntimeError("unreachable")
+                    raise Exception(e) from e
+        raise
 
     async def get_raw_url(self, url: str, clean_all: bool = True) -> str:
         p = self.get_platform(url)
@@ -62,12 +54,12 @@ class ParseService:
         for attempt in range(1, max_retries + 1):
             try:
                 proxy = pl_cfg.roll_parser_proxy(p.id)
-                logger.debug(f"使用配置: proxy={mask_proxy(proxy)}, attempt={attempt}/{max_retries}")
+                logger.debug(f"使用配置: proxy={proxy}, attempt={attempt}/{max_retries}")
                 raw_url = await self.parser.get_raw_url(url, proxy=proxy, clean_all=clean_all)
                 logger.debug(f"原始 URL: {raw_url}")
                 return str(raw_url)
             except Exception as e:
                 logger.warning(f"获取原始 URL 失败, attempt={attempt}/{max_retries}, err={e}")
                 if attempt >= max_retries:
-                    raise
-        raise RuntimeError("unreachable")
+                    raise Exception(e) from e
+        raise

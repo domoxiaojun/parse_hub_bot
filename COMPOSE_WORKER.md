@@ -6,7 +6,7 @@
 
 直接使用原.env和data/config/platform_config.yaml，不另建.env.worker或data/worker。已有.env请勿覆盖，只补充WORKER_SERVICE_KEY（至少32字符）。首次安装才将.env.example复制为.env。
 
-Token必须与gptbot目标账号相同。API_ID/API_HASH、BOT_PROXY及原目录配置继续保留。Worker使用独立持久的data/sessions/worker_sender_<BotID>.session，并以no_updates=True运行发送客户端；preview直出由Worker组装并发送RichMessage，raw/zip保留原文件Document。原bot_<BotID>.session保持不变。旧bot.py不要同时处理同一消息。
+Token必须与gptbot目标账号相同。API_ID/API_HASH、BOT_PROXY及原目录配置继续保留。Worker使用独立持久的data/sessions/worker_sender_<BotID>.session，并以no_updates=True运行发送客户端；preview直出由Worker组装并发送RichMessage，raw/zip保留原文件Document。原bot_<BotID>.session保持不变。旧交互Bot（`python -m ext.bot`或上游`bot.py`）不要同时处理同一消息。
 
 Compose挂载原目录：
 
@@ -39,7 +39,7 @@ docker compose -f compose.worker.yaml ps
 docker compose -f compose.worker.yaml logs --tail=100 parsehub-worker
 ```
 
-镜像parsehub-worker:local复用当前Dockerfile从源码构建；Compose命令覆盖为python -m worker，不启动bot.py。原Dockerfile、原docker-compose.yaml及原Bot功能保持不变。仅新增独立Worker部署入口。
+镜像parsehub-worker:local用`deploy/Dockerfile`（上游Dockerfile加pipefail与固定Deno版本）从源码构建；Compose命令覆盖为python -m ext.worker，不启动bot.py。原Dockerfile、原docker-compose.yaml及原Bot功能保持不变。仅新增独立Worker部署入口。
 
 容器内部显式允许监听0.0.0.0:8080，宿主端口默认仅127.0.0.1:8080。所有API仍需Bearer认证。健康检查验证协议版本3和配置的Bot ID；平台配置在启动时已从原YAML读取。
 
@@ -87,10 +87,10 @@ Worker运行原`ParsePipeline`：例如downloads/作品标题/作品标题.mp4�
 
 ```sh
 # 在线全量清理
-docker compose -f compose.worker.yaml exec parsehub-worker python -m worker.clean_cache --online
+docker compose -f compose.worker.yaml exec parsehub-worker python -m ext.worker.clean_cache --online
 
 # 在线演练预览
-docker compose -f compose.worker.yaml exec parsehub-worker python -m worker.clean_cache --online --dry-run
+docker compose -f compose.worker.yaml exec parsehub-worker python -m ext.worker.clean_cache --online --dry-run
 ```
 
 ### 方式 2：离线停机清理（使用 run 一次性容器）
@@ -101,16 +101,16 @@ docker compose -f compose.worker.yaml exec parsehub-worker python -m worker.clea
 docker compose -f compose.worker.yaml stop parsehub-worker
 
 # 启动临时容器执行全量清理
-docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m ext.worker.clean_cache
 
 # 启动临时容器仅演练预览
-docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --dry-run
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m ext.worker.clean_cache --dry-run
 
 # 强制全量清理（连同未到期租约一并清空）
-docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --force
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m ext.worker.clean_cache --force
 
 # 仅清理指定链接的缓存（按当前 BOT_TOKEN 对应的任务键匹配，也接受别名）
-docker compose -f compose.worker.yaml run --rm parsehub-worker python -m worker.clean_cache --url "https://..."
+docker compose -f compose.worker.yaml run --rm parsehub-worker python -m ext.worker.clean_cache --url "https://..."
 
 docker compose -f compose.worker.yaml start parsehub-worker
 ```

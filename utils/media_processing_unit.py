@@ -40,8 +40,6 @@ class MediaProcessingUnit:
     """
 
     TG_MAX_VIDEO_SIZE = 2000 * 1000**2
-    TG_MAX_PHOTO_BYTES = 10 * 1000**2
-    TG_MAX_PHOTO_DIMENSION_SUM = 10_000
 
     def __init__(
         self,
@@ -76,33 +74,26 @@ class MediaProcessingUnit:
     #  图片处理
     # ------------------------------------------------------------------ #
 
-    async def process_image(self, file_path: Path, *, split_long_images: bool = True) -> MediaProcessResult:
+    async def process_image(self, file_path: Path) -> MediaProcessResult:
         image_format, is_broken, image_mode = await self._detect_image_format(file_path)
         if image_format == "GIF":
             self.logger("图片为 GIF 格式，无需处理")
             return MediaProcessResult(output_paths=[file_path])
+        needs_convert = image_format not in {"PNG", "JPEG"}
+        needs_rgb = image_mode == "RGBA"
         source = file_path
         intermediates: list[Path] = []  # 统一收集中间文件
 
         try:
-            if not is_broken and (oriented := await asyncio.to_thread(self._normalize_orientation, source)):
-                source = oriented
-                intermediates.append(source)
-                image_format, image_mode = "JPEG", "RGB"
-
-            needs_convert = (image_format not in {"PNG", "JPEG"}
-                             or source.suffix.lower() not in {".png", ".jpg", ".jpeg"})
-            if needs_convert or is_broken:
+            if needs_convert or is_broken or needs_rgb:
                 self.logger(f"图片需转换: format={image_format}, mode={image_mode}, broken={is_broken}")
-                source = await self._img2jpg(source)
+                source = await self._img2jpg(file_path)
                 intermediates.append(source)
 
-            if result := await asyncio.to_thread(
-                self._adapt_image, source, split_long_images=split_long_images,
-            ):
+            if result := await asyncio.to_thread(self._adapt_image, source):
                 return result
 
-            # Resize/compress only when Telegram's photo limits require it.
+            # _adapt_image 无需处理，尝试 downscale
             if downscaled := await asyncio.to_thread(self._downscale_image, source):
                 intermediates.append(downscaled)
                 source = downscaled
@@ -141,21 +132,7 @@ class MediaProcessingUnit:
             codec.strip().lower(), codec.strip().upper()
         )
 
-    def _normalize_orientation(self, file_path: Path) -> Path | None:
-        """Bake EXIF orientation into pixels before any sizing or Telegram upload."""
-        with Image.open(file_path) as img:
-            orientation = img.getexif().get(274, 1)
-            if orientation not in {2, 3, 4, 5, 6, 7, 8}:
-                return None
-            normalized = ImageOps.exif_transpose(img)
-            if normalized.mode != "RGB":
-                normalized = normalized.convert("RGB")
-            out_path = self.output_dir / f"{file_path.stem}_oriented.jpg"
-            normalized.save(out_path, format="JPEG", quality=95)
-        self.logger(f"图片方向已规范化: orientation={orientation}, output={out_path}")
-        return out_path
-
-    def _adapt_image(self, file_path: Path, *, split_long_images: bool = True) -> MediaProcessResult | None:
+    def _adapt_image(self, file_path: Path) -> MediaProcessResult | None:
         """分析图片尺寸并做填充 / 切割，返回 None 表示无需处理"""
         with Image.open(file_path) as img:
             w, h = img.width, img.height
@@ -178,14 +155,6 @@ class MediaProcessingUnit:
             if hw_ratio <= 5 or (w < 200 and hw_ratio < 20):
                 self.logger("竖图比例正常，跳过处理")
                 return None
-            if not split_long_images:
-                if hw_ratio <= 20:
-                    self.logger("封面长图保持单图，跳过切割")
-                    return None
-                self.logger("封面竖图比例超限，使用填充保持单图")
-                padding = self._calc_padding_vertical(w, h)
-                with Image.open(file_path) as img:
-                    return self._pad_image(file_path, img, padding)
             if w < 200 and hw_ratio > 20:
                 self.logger("窄竖图比例超限，需要填充")
                 padding = self._calc_padding_vertical(w, h)
@@ -201,40 +170,42 @@ class MediaProcessingUnit:
         output = self.output_dir / file_path.with_suffix(".jpg").name
         try:
             with Image.open(file_path) as pil_img:
-                transposed = ImageOps.exif_transpose(pil_img)
-                img = transposed.convert("RGB") if transposed.mode != "RGB" else transposed
+                img = pil_img.convert("RGB") if pil_img.mode != "RGB" else pil_img
                 img.save(output, format="JPEG")
         except OSError as e:
             self.logger(f"Pillow 转换失败，尝试 ffmpeg: {e}")
             await run_cmd(
-                "ffmpeg", "-v", "error", "-i", str(file_path), "-frames:v", "1",
-                "-q:v", "1", "-y", str(output), timeout=60, check=True,
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file_path),
+                "-frames:v",
+                "1",
+                "-q:v",
+                "1",
+                "-y",
+                str(output),
+                timeout=60,
             )
             if not output.exists() or output.stat().st_size == 0:
                 raise
         self.logger(f"图片转换完成: {output}")
         return output
 
-    def _downscale_image(self, file_path: Path, max_side: int = 10_000) -> Path | None:
-        """只在 Telegram 照片边长和文件大小限制下缩放或压缩。"""
+    def _downscale_image(self, file_path: Path, max_side: int = 2560) -> Path | None:
+        """若图片任一边超过 max_side，等比缩放至长边为 max_side，返回新文件路径；无需缩放返回 None"""
         with Image.open(file_path) as img:
             w, h = img.size
-            too_large_dimensions = w + h > self.TG_MAX_PHOTO_DIMENSION_SUM
-            too_large_file = file_path.stat().st_size > self.TG_MAX_PHOTO_BYTES
-            if not too_large_dimensions and not too_large_file:
+            if max(w, h) <= max_side:
                 return None
-            scale = min(1.0, max_side / (w + h))
-            new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
-            self.logger(
-                f"图片超过 Telegram 限制，处理: {w}x{h}/{file_path.stat().st_size} bytes "
-                f"-> {new_w}x{new_h}"
-            )
-            resized = img.resize((new_w, new_h), Resampling.LANCZOS) if scale < 1 else img.copy()
-            # JPEG is the fallback only for an oversized file that cannot be reduced by dimensions.
-            out_path = self.output_dir / f"{file_path.stem}_telegram.jpg"
-            if resized.mode not in {"RGB", "L"}:
-                resized = resized.convert("RGB")
-            resized.save(out_path, format="JPEG", quality=88, optimize=True)
+            scale = max_side / max(w, h)
+            new_w, new_h = int(w * scale), int(h * scale)
+            self.logger(f"图片长边超限({max(w, h)}px > {max_side}px)，缩放: {w}x{h} -> {new_w}x{new_h}")
+            resized = img.resize((new_w, new_h), Resampling.LANCZOS)
+            ext = file_path.suffix
+            out_path = self.output_dir / f"{file_path.stem}_downscaled{ext}"
+            resized.save(out_path)
         return out_path
 
     # -- 图片辅助 --------------------------------------------------------- #
@@ -364,9 +335,12 @@ class MediaProcessingUnit:
     async def remux_to_mp4(self, file_path: Path) -> Path:
         out = self.output_dir / (file_path.stem + "_remux" + ".mp4")
         cmd = ["ffmpeg", "-i", str(file_path), "-c", "copy", "-movflags", "+faststart", "-y", str(out)]
-        await run_cmd(*cmd, timeout=20 * 60, check=True)
-        if not out.is_file() or out.stat().st_size == 0:
-            raise ValueError("ffmpeg produced no output")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
         return out
 
     async def ensure_h264(self, file_path: Path) -> Path:
@@ -378,7 +352,12 @@ class MediaProcessingUnit:
 
         self.logger(f"h264 转码: {file_path.name} -> {out.name}, duration={duration:.0f}s, encoder=SW:libx264")
 
-        await run_cmd(*cmd, timeout=30 * 60, check=True)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
 
         if out.exists() and out.stat().st_size > 0:
             self.logger(f"h264 转码成功: size={out.stat().st_size / 1024 / 1024:.1f}MB")
@@ -472,16 +451,20 @@ class MediaProcessingUnit:
                 "-y",
                 str(out_file),
             ]
-            await run_cmd(*cmd, timeout=20 * 60, check=True)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
 
             new_dur = int(await self.get_duration(out_file))
             self.logger(f"分割 part {part}: offset={cur}s, duration={new_dur}s, file={out_file}")
             if new_dur <= 0:
                 break
-            # Always advance past the overlap; otherwise a segment shorter than keep_sec
-            # (size limit hit within a second) would re-encode the same offset forever.
-            advance = max(new_dur - int(keep_sec), 1) if cur + new_dur < total_duration else new_dur
-            cur += advance
+            cur += new_dur
+            if cur < total_duration:
+                cur = max(cur - int(keep_sec), 0)
             part += 1
 
         self.logger(f"视频分割完成: {len(output_paths)} 段")

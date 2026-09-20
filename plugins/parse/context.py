@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from pyrogram.types import Message
 
 
+GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD = 5
+
 
 @dataclass(frozen=True, slots=True)
 class ParseRequest:
@@ -36,6 +38,7 @@ class ParseOptions:
     skip_media_processing: bool
     singleflight: bool
     save_metadata: bool
+    gif_only_skip_download_count_threshold: int
 
     @classmethod
     def from_mode(cls, mode: ParseMode, *, bypass_cache: bool) -> ParseOptions:
@@ -46,6 +49,7 @@ class ParseOptions:
                     skip_media_processing=True,
                     singleflight=False,
                     save_metadata=False,
+                    gif_only_skip_download_count_threshold=0,
                 )
             case ParseMode.ZIP:
                 return cls(
@@ -53,6 +57,7 @@ class ParseOptions:
                     skip_media_processing=True,
                     singleflight=False,
                     save_metadata=True,
+                    gif_only_skip_download_count_threshold=0,
                 )
             case ParseMode.PREVIEW:
                 return cls(
@@ -60,4 +65,5 @@ class ParseOptions:
                     skip_media_processing=False,
                     singleflight=not bypass_cache,
                     save_metadata=False,
+                    gif_only_skip_download_count_threshold=GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD,
                 )

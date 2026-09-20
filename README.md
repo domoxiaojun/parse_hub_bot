@@ -36,7 +36,6 @@
 
 - 🎬 **多平台解析** — 抖音、B站、YouTube、小红书、Twitter 等 16+ 主流平台一站搞定
 - ⚡ **内联模式** — 在任意聊天窗口输入 `@BotUsername <链接>` 即可解析
-  > 部署后请在 BotFather 使用 `/setinlinefeedback` 将反馈比例设为 `100%`，否则未命中缓存的占位结果不会触发后续媒体准备。
 - 🖼️ **Tg 兼容** — 自动转码、长图切割、大视频分段
 - 📦 **多种模式** — 在线预览, 原始文件, 打包下载
 - 🐳 **Docker 部署** — 开箱即用
@@ -285,7 +284,3 @@ uv run pytest
 
 </div>
 
-
-## HTTP Worker（无消息监听）
-
-与 gptbot 集成时使用独立 Worker 入口，复用全部解析平台和媒体准备能力。两进程使用同一个 Bot Token；Worker 注册媒体，gptbot 发送 Rich Message。配置及原生进程部署见 [WORKER.md](WORKER.md)。

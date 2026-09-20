@@ -86,12 +86,7 @@ def build_caption_by_str(
     """构建消息正文：标题 + 内容 + 来源链接"""
     title, content = title or "", content or ""
     if rich:
-        parts = []
-        if title and not hide_title:
-            parts.append(f"**{title}**")
-        if content and not hide_desc:
-            parts.append(content)
-        body = "\n\n".join(parts)
+        body = f"### {title}\n\n <details><summary>📃</summary>\n\n{content}\n\n</details>"
     elif telegraph_url:
         label = (title or content[:15]).replace("\n", " ") or "-"
         body = f"**[{label}]({telegraph_url})**"
@@ -112,9 +107,11 @@ def build_caption_by_str(
 
 
 def format_text(text: str) -> str:
-    """保留完整内容并为长正文添加折叠块样式。"""
+    """格式化输出内容, 限制长度, 添加折叠块样式"""
     text = text.strip()
     if len(text) > 500 or len(text.splitlines()) > 10:
+        if len(text) > 1000:
+            text = text[:900] + "......"
         return f"<blockquote expandable>{text}</blockquote>"
     else:
         return text
@@ -124,18 +121,14 @@ async def create_telegraph_page(html_content: str, cli: Client, parse_result: An
     """创建 Telegraph 页面，返回页面 URL"""
     logger.debug(f"创建 Telegraph 页面: title={parse_result.title}")
     me = await cli.get_me()
-    telegraph = Telegraph()
-    try:
-        page = await telegraph.create_page(
-            parse_result.title or "-",
-            html_content=html_content,
-            author_name=f"{me.full_name} | @{me.username}",
-            author_url=parse_result.raw_url,
-        )
-        logger.debug(f"Telegraph 页面已创建: {page.url}")
-        return page.url
-    finally:
-        await telegraph.close()
+    page = await Telegraph().create_page(
+        parse_result.title or "-",
+        html_content=html_content,
+        author_name=f"{me.full_name} | @{me.username}",
+        author_url=parse_result.raw_url,
+    )
+    logger.debug(f"Telegraph 页面已创建: {page.url}")
+    return page.url
 
 
 def replace_url(platform: Platform | None, v: str) -> str:

@@ -1,19 +1,13 @@
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import pillow_heif
 from easy_ai18n import PreLocaleSelector
-from parsehub.types import AnyMediaFile, DownloadResult, LivePhotoFile, ProgressUnit
+from parsehub.types import AnyMediaFile, DownloadResult, ProgressUnit
 from parsehub.utils.media_info import MediaInfoReader
 
-from delivery.preparation import MotionInfo, prepare_motion
 from log import logger
 from utils.helpers import to_list
 from utils.media_processing_unit import MediaProcessingUnit
-
-# Every entry point that converts media needs HEIF support, not only bot.py.
-pillow_heif.register_heif_opener()
 
 
 @dataclass
@@ -21,7 +15,6 @@ class ProcessedMedia:
     source: AnyMediaFile
     output_paths: list[Path] | None = None
     output_dir: Path | None = None
-    motion: MotionInfo | None = None
 
 
 def resolve_media_info(processed: ProcessedMedia, file_path: str) -> tuple[int, int, int]:
@@ -30,24 +23,6 @@ def resolve_media_info(processed: ProcessedMedia, file_path: str) -> tuple[int, 
         info = MediaInfoReader.read(file_path)
         return info.width, info.height, info.duration
     return processed.source.width, processed.source.height, getattr(processed.source, "duration", 0)
-
-
-def resolve_live_photo_video_info(processed: ProcessedMedia) -> tuple[int, int, int]:
-    """Read the motion file's display dimensions instead of reusing its cover dimensions."""
-    source = processed.source
-    if not isinstance(source, LivePhotoFile):
-        raise TypeError("live_photo_required")
-    if processed.motion:
-        info = processed.motion
-        return info.width, info.height, math.ceil(info.duration)
-    fallback = source.width, source.height, source.duration
-    if not source.video_path:
-        return fallback
-    try:
-        info = MediaInfoReader.read(source.video_path)
-    except Exception:
-        return fallback
-    return info.width or fallback[0], info.height or fallback[1], info.duration or fallback[2]
 
 
 def progress(current: int, total: int, unit: ProgressUnit, _t: PreLocaleSelector) -> str | None:
@@ -75,29 +50,8 @@ async def process_media_files(download_result: DownloadResult) -> list[Processed
     for media_file in media_files:
         # 对于实况图片只处理图片, 不处理视频
         logger.debug(f"处理文件: {media_file.path}")
-        try:
-            result = (
-                await processor.process_image(Path(media_file.path), split_long_images=False)
-                if isinstance(media_file, LivePhotoFile)
-                else await processor.process(media_file.path)
-            )
-        except ValueError as e:
-            if isinstance(media_file, LivePhotoFile):
-                raise
-            # An unrecognised extension must not discard the whole post; pass the file through untouched.
-            logger.warning(f"跳过媒体处理, 原样发送: {type(e).__name__}: {e}")
-            processed_list.append(ProcessedMedia(media_file, None, None))
-            continue
+        result = await processor.process(media_file.path)
         logger.debug(f"处理结果: output_paths={result.output_paths}")
-        motion = None
-        if isinstance(media_file, LivePhotoFile):
-            if not media_file.video_path:
-                logger.warning("实况视频缺失，降级为静态图片")
-            else:
-                try:
-                    motion = await prepare_motion(Path(media_file.video_path), processed_dir)
-                except Exception as error:
-                    logger.warning(f"实况视频准备失败，降级为静态图片: {type(error).__name__}")
-        processed_list.append(ProcessedMedia(media_file, result.output_paths, result.temp_dir, motion))
+        processed_list.append(ProcessedMedia(media_file, result.output_paths, result.temp_dir))
     logger.debug(f"媒体处理完成: 处理数={len(processed_list)}")
     return processed_list

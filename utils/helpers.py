@@ -9,8 +9,8 @@ from typing import Any
 from log import logger
 
 
-async def run_cmd(*cmd: str, timeout: float = 30, check: bool = False) -> str:
-    """运行外部命令并异步读取输出；check=True 时失败不静默返回空结果。"""
+async def run_cmd(*cmd: str, timeout: float = 30) -> str:
+    """运行外部命令并异步读取输出"""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -21,11 +21,7 @@ async def run_cmd(*cmd: str, timeout: float = 30, check: bool = False) -> str:
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        if check:
-            raise TimeoutError("external_command_timeout") from None
         return ""
-    if check and proc.returncode:
-        raise RuntimeError("external_command_failed")
     return stdout.decode().strip()
 
 
@@ -67,22 +63,6 @@ def with_request_id[T](func: Callable[..., Awaitable[T]]) -> Callable[..., Await
             return await func(*args, **kwargs)
 
     return wrapper
-
-
-def mask_proxy(value: str | None) -> str | None:
-    """Hide proxy credentials in logs; keep scheme, host and port."""
-    if not value:
-        return value
-    from urllib.parse import urlsplit
-
-    parts = urlsplit(value)
-    if not (parts.username or parts.password):
-        return value
-    host = parts.hostname or ""
-    if ":" in host:
-        host = f"[{host}]"
-    port = f":{parts.port}" if parts.port else ""
-    return f"{parts.scheme}://***@{host}{port}"
 
 
 def mask_secret(value: str) -> str:
