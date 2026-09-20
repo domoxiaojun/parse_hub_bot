@@ -119,8 +119,8 @@ TelegramTransport.upload
   30 分钟且高度大于 720 的视频缩到 720p，因此接入前必须先修改质量策略。
 - 当前常规路径没有完整验证或强制 H.264、AAC、`yuv420p`。单纯把 VP9/AV1/HEVC
   码流 `-c copy` 到 MP4 不等于跨客户端兼容。
-- 当前 Worker 已将 `MEDIA_VERSION` 提升到 3，并将任务缓存键提升到
-  `v10-douyin-quality`，避免旧的低清媒体结果继续复用。
+- 当前 Worker 已将 `MEDIA_VERSION` 提升到 4，并将任务缓存键提升到
+  `v11-youtube-mweb`，避免旧的低清媒体结果（含 SABR-only 时期的 YouTube 360p）继续复用。
 
 ## 对最高画质选择的约束
 

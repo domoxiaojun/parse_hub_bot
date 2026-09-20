@@ -67,6 +67,26 @@ def install_douyin_quality() -> None:
     _installed.add("douyin")
 
 
+def install_youtube_client() -> None:
+    """Extend ``YtbParse.cli_args`` (parse stage only) so Premium sessions get mweb formats, not SABR-only 360p."""
+    if "youtube" in _installed:
+        return
+    from parsehub.parsers.parser.youtube import YtbParse
+
+    from ext import youtube_quality
+
+    original = getattr(YtbParse, "cli_args", None)
+    if not isinstance(original, property) or original.fget is None:
+        raise HookTargetMissing("parsehub.parsers.parser.youtube.YtbParse.cli_args")
+    fget = original.fget
+
+    def cli_args(self: Any) -> list[str]:
+        return youtube_quality.extend_cli_args(fget(self))
+
+    YtbParse.cli_args = property(cli_args)
+    _installed.add("youtube")
+
+
 def install_media_processing() -> None:
     """Point the upstream pipeline's media step at the fork preparation."""
     if "media" in _installed:
@@ -99,6 +119,7 @@ def install(*, bot: bool = False) -> None:
     """Install every hook shared by the Worker and the Bot; ``bot=True`` adds the Bot dispatcher swap."""
     install_log_patcher()
     install_douyin_quality()
+    install_youtube_client()
     install_media_processing()
     if bot:
         install_bot_handlers()

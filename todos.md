@@ -1,14 +1,14 @@
-# 上游目录零改动重构 (2026-09-20)
+# YouTube 1080p：mweb 播放器客户端挂钩 (2026-09-21)
 
-计划：`plans/upstream-isolation-20260920/plan.md`。
+计划：`plans/youtube-mweb-20260921/plan.md`。
 
-- [x] 1. Fork 自有文件 `ruff format`（并入本轮迁移提交，git 仍识别为重命名）
-- [x] 2. `worker/`、`delivery/`、`services/douyin_quality.py` 迁入 `ext/`；Fork 测试迁入 `test/ext/`；改写 import、compose、systemd、clean_cache 提示
-- [x] 3. 上游目录恢复为 `upstream/main` 原样（含 Dockerfile、README；Worker 改用 `deploy/Dockerfile`）
-- [x] 4. 新增 `ext/media/`、`ext/cache.py`、`ext/hooks.py`，Worker 与 delivery 改用 ext 实现；Worker 启动校验 DOWNLOAD_DIR 一致
-- [x] 5. 新增 `ext/bot/`（app/handlers/inline/sender/reporters/captions/registry/__main__），handle_parse 替换与 inline handler 排除
-- [x] 6. 更新测试路径，新增 `test/ext/test_upstream_hooks.py`（挂钩目标存在性、patcher 脱敏、上游目录 pristine、inline 覆盖完整性）
-- [x] 7. ruff / mypy(ext) / pytest 131 项全绿；文档（CLAUDE.md、WORKER.md、COMPOSE_WORKER.md、ext/README.md）同步
-- [x] 8. 提交；记录上游本地检出路径到记忆
+- [x] 0. mypy 排除 `scripts/`（`pyproject.toml` `[tool.mypy] exclude`），恢复全量 mypy 可运行
+- [x] 1. `ext/youtube_quality.py`：mweb 客户端常量与幂等的 `extend_cli_args()`
+- [x] 2. `ext/hooks.py`：`install_youtube_client()` 覆盖 `YtbParse.cli_args`（仅解析阶段），纳入 `install()`
+- [x] 3. `MEDIA_VERSION` 3→4、Worker 缓存键追加 `v11-youtube-mweb`
+- [x] 4. 测试：`test/ext/test_upstream_hooks.py`、`test/ext/test_youtube_quality.py`
+- [x] 5. 文档同步：`ext/README.md`、`CLAUDE.md`、`WORKER.md`、`TELEGRAM_MEDIA_LIMITS.md`
+- [x] 6. ruff / mypy(ext) / pytest 140 项全绿；真实 URL 端到端验证：解析 3.5s、下载 13.5s、ffprobe h264 1920x1080 + aac
+- [x] 7. 提交
 
-未挂钩的上游差异（有意放弃，见 `ext/README.md`）：`db/init.py` 新库 stamp、`plugins/filters.py` caption-only 频道转发 None 保护。
+备注：全量 `uv run mypy` 仍有 250 个历史错误，全部在 `test/ext/` 的既有测试文件中（本次改动前因 `scripts/` 模块名冲突根本跑不到这一步）；`ext/` 本身 0 错误。

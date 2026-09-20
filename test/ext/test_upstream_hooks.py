@@ -68,7 +68,7 @@ def test_fork_packages_do_not_leak_into_upstream_directories() -> None:
 def test_hooks_install_is_idempotent_and_targets_exist() -> None:
     hooks.install(bot=True)
     hooks.install(bot=True)
-    assert hooks.installed() == {"log", "douyin", "media", "bot"}
+    assert hooks.installed() == {"log", "douyin", "youtube", "media", "bot"}
     import plugins.parse.handlers
     import services.media
     import services.pipeline
@@ -117,3 +117,20 @@ def test_douyin_hook_only_touches_douyin_results() -> None:
     ):
         assert asyncio.run(service.parse("https://example.com/p")) is parsed
         upgrade.assert_not_awaited()
+
+
+def test_youtube_hook_extends_parse_stage_args_only_for_youtube() -> None:
+    from parsehub.parsers.parser.facebook import FacebookParse
+    from parsehub.parsers.parser.youtube import YtbParse, YtbVideoParseResult
+    from parsehub.types import VideoRef
+
+    hooks.install()
+    hooks.install()
+    parse_args = YtbParse().cli_args
+    assert parse_args[-4:] == ["--extractor-args", "youtube:player_client=mweb", "-S", "+codec:h264,filesize~500M"]
+    assert parse_args.count("--extractor-args") == parse_args.count("-S") == 1
+    assert "--dump-single-json" in parse_args
+    assert "--extractor-args" not in FacebookParse().cli_args
+    download_args = YtbVideoParseResult(dl=SimpleNamespace(), video=VideoRef(url="https://youtu.be/x")).cli_args
+    assert "--extractor-args" not in download_args
+    assert "-S" in download_args

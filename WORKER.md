@@ -19,7 +19,7 @@ uv run pytest            # test/ext/test_upstream_hooks.py 会校验上游目录
 git push origin worker
 ```
 
-ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音显式质量探测由 `ext/douyin_quality.py`（经 `ext/hooks.py` 挂到 `ParseService.parse`）对公共 ParseHub 2.2.x 结果提供兜底。
+ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音显式质量探测由 `ext/douyin_quality.py`（经 `ext/hooks.py` 挂到 `ParseService.parse`）对公共 ParseHub 2.2.x 结果提供兜底。YouTube 解析由 `ext/youtube_quality.py`（挂到 `YtbParse.cli_args`）指定 yt-dlp `player_client=mweb`，避免 Premium 会话被 SABR-only 限制在 360p；运行主机需有 yt-dlp 支持的 JS 运行时（镜像内为 Deno）。
 
 Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
 `ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件；抖音视频结果额外经过本地显式质量兜底。Worker只负责HTTP/幂等/租约、

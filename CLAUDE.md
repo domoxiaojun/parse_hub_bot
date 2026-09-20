@@ -66,7 +66,8 @@ i18n/               easy-ai18n；源语言 zh-hans，代码里用 `_t`/`t_` 包�
 Fork（`ext/`，详见 `ext/README.md`）：
 
 ```
-ext/hooks.py        运行时覆盖：loguru 凭据脱敏 patcher、ParseService.parse 抖音画质、process_media_files、handle_parse
+ext/hooks.py        运行时覆盖：loguru 凭据脱敏 patcher、ParseService.parse 抖音画质、YtbParse.cli_args YouTube mweb 客户端、
+                    process_media_files、handle_parse
 ext/cache.py        Fork 持久缓存模型（Live 配对、asset_key、media_version）+ ForkPersistentCache（同一 cache 表）
 ext/media/          commands.py（check=True 的 run_cmd）、processing.py（ForkMediaProcessingUnit、PreparedMedia.motion）
 ext/delivery/       Bot 与 Worker 共享的投递核心（无 update handler）：

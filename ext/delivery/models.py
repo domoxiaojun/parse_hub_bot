@@ -12,7 +12,7 @@ AssetKind = Literal["photo", "video", "live_photo", "animation", "audio", "voice
 SendKind = Literal["message", "single", "live_photo", "album", "rich"]
 # Bump when media preparation/quality semantics change so old low-quality
 # assets cannot be replayed after a parser upgrade.
-MEDIA_VERSION = 3
+MEDIA_VERSION = 4
 
 
 class DeliveryError(ValueError):

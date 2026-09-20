@@ -22,6 +22,7 @@ ext/
   hooks.py          对上游模块的运行时覆盖（幂等；目标缺失即抛 HookTargetMissing）
   cache.py          Fork 持久缓存模型（Live Photo 配对、asset_key、media_version）与 PersistentCache 子类
   douyin_quality.py 抖音显式画质兜底
+  youtube_quality.py YouTube 解析阶段指定 yt-dlp 播放器客户端（mweb），绕过 Premium 会话的 SABR-only 360p
   media/            commands.py（严格 run_cmd）、processing.py（MediaProcessingUnit 子类、process_media_files）
   delivery/         Bot 与 Worker 共享的投递核心（models/assets/preparation/rich/transport/sender）
   worker/           HTTP Worker
@@ -35,6 +36,7 @@ test/ext/           Fork 测试；`test/` 根目录只保留上游测试
 | --- | --- | --- |
 | `install_log_patcher` | loguru 全局 patcher | 所有日志行脱敏 `scheme://user:pass@`，覆盖上游平台配置的导入期 dump 与代理日志 |
 | `install_douyin_quality` | `services.parser.ParseService.parse` | 抖音结果替换为显式最高画质播放地址 |
+| `install_youtube_client` | `parsehub.parsers.parser.youtube.YtbParse.cli_args` | 解析阶段追加 `--extractor-args youtube:player_client=mweb` 与下载阶段相同的 `-S` 排序（使 VideoRef 宽高与实际下载一致）；下载阶段（`--load-info-json`）与 Facebook 等其他 yt-dlp 平台不变 |
 | `install_media_processing` | `services.pipeline.process_media_files` / `services.media.process_media_files` | EXIF/HEIF 方向、Telegram 照片限制、Live 封面不切图、实况视频准备、ffmpeg 失败即抛 |
 | `install_bot_handlers`（仅 Bot） | `plugins.parse.handlers.handle_parse` | 解析结果分派走共享投递核心；上游 `parse` 消息入口原样保留 |
 
