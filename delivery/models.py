@@ -10,7 +10,9 @@ from typing import Any, Literal
 
 AssetKind = Literal["photo", "video", "live_photo", "animation", "audio", "voice", "document"]
 SendKind = Literal["message", "single", "live_photo", "album", "rich"]
-MEDIA_VERSION = 2
+# Bump when media preparation/quality semantics change so old low-quality
+# assets cannot be replayed after a parser upgrade.
+MEDIA_VERSION = 3
 
 
 class DeliveryError(ValueError):

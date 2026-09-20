@@ -52,12 +52,16 @@ async def main() -> None:
         expected_id = settings.bot_token.get_secret_value().split(":", 1)[0]
         parse_service = ParseService()
         engine = ParseHubEngine(store.files, parse_service)
+        capabilities = engine.capabilities()
+        logging.getLogger("parsehub.worker").info(
+            "event=parser.ready parsehub_version=%s", capabilities["version"]
+        )
         client = create_sender_client(settings)
         sender_runtime = SenderRuntime(
             client, expected_id, sessions / f"{settings.worker_sender_session_name}.cooldown.json",
         )
         jobs = Jobs(engine, store, expected_id, TelegramSender(client, sender_runtime))
-        platform_config = PlatformConfigFile(settings.platform_config_path, engine.capabilities()["platforms"])
+        platform_config = PlatformConfigFile(settings.platform_config_path, capabilities["platforms"])
         jobs.configure(platform_config.active_config())
         runner = web.AppRunner(create_app(jobs, settings.worker_service_key.get_secret_value(), platform_config),
                                access_log=None)

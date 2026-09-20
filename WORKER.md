@@ -19,10 +19,10 @@ uv run pytest test/test_worker_*.py
 git push origin worker
 ```
 
-ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。更新旁边的 ParseHub 源码对照目录不会自动更新本项目依赖。
+ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音显式质量探测由 `services/douyin_quality.py` 对公共 ParseHub 2.2.x 结果提供兜底。
 
 Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
-`ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件。Worker只负责HTTP/幂等/租约、
+`ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件；抖音视频结果额外经过本地显式质量兜底。Worker只负责HTTP/幂等/租约、
 把原版输出适配为投递信封，以及preview Rich Message、raw/zip原文件的Telegram发送。gptbot继续作为唯一update接收方；
 直出解析轮不调用LLM，未携带delivery的旧工具请求仍使用文件交接。
 

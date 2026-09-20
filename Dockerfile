@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         media-types \
         curl unzip ca-certificates \
-    && curl -fsSL https://deno.land/install.sh | sh -s 2.9.7 \
+    && curl -fsSL https://deno.land/install.sh | sh -s v2.9.7 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV DENO_INSTALL="/root/.deno"

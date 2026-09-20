@@ -15,7 +15,7 @@ logger = logging.getLogger("parsehub.worker")
 
 
 # Historical cache-key prefixes; the last entry is what Jobs.key() produces today.
-KEY_VERSIONS = ("v7-original-pipeline", "v8-single-rich", "v9-envelope")
+KEY_VERSIONS = ("v7-original-pipeline", "v8-single-rich", "v9-envelope", "v10-douyin-quality")
 
 
 class Jobs:
