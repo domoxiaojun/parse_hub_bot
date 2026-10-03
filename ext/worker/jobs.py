@@ -22,6 +22,7 @@ KEY_VERSIONS = (
     "v9-envelope",
     "v10-douyin-quality",
     "v11-youtube-mweb",
+    "v12-douyin-measured-quality",
 )
 
 
@@ -140,6 +141,7 @@ class Jobs:
             reusable = result.get("mediaFailureCount", 0) == 0
             # A read-only parse must not become an auto hit that suppresses future media downloads.
             reusable = reusable and request.mode != "read_only"
+            reusable = reusable and all(item.get("highest_confirmed") for item in result.get("_videoQuality", []))
             if not result.get("_files"):
                 self.store.discard_preparation(owner)
             canonical_key = self.key(result.get("canonicalUrl", url), request)
@@ -154,6 +156,15 @@ class Jobs:
         hit = None if request.refresh else self.store.lookup(key)
         if hit:
             cache_id, result = hit
+            if result.get("platform") == "douyin":
+                for summary in result.get("_videoQuality", []):
+                    logger.info(
+                        "event=quality.cache platform=douyin job=%s source=worker_cache "
+                        "reprobed=false width=%s height=%s codec=%s highest_confirmed=%s "
+                        "scope=previous_discovered_candidates",
+                        job_id, summary.get("width", 0), summary.get("height", 0),
+                        summary.get("codec", "unknown"), summary.get("highest_confirmed", False),
+                    )
         else:
             # Share only byte-identical submitted URLs. Resolving or cleaning a short URL
             # here would add a network request that the upstream ParseService does not own.

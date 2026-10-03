@@ -18,6 +18,7 @@ from parsehub.utils.helpers import match_url
 
 from ext.delivery.assets import worker_cached_media
 from ext.delivery.models import asset_key
+from ext.douyin_quality import audit_processed_video
 from ext.media.processing import motion_of, resolve_live_photo_video_info
 from ext.worker.security import EngineError, validate_url
 from ext.worker.upstream_adapter import OriginalPipelineAdapter, OriginalPipelineError, UpstreamOutput
@@ -231,6 +232,12 @@ class ParseHubEngine:
             raise EngineError("media_processing_failed", "convert")
         if register_directory:
             register_directory(output_dir)
+
+        if platform == "douyin":
+            result["_videoQuality"] = [
+                summary for processed in pipeline.processed_list
+                for summary in await audit_processed_video(processed)
+            ]
 
         if output_mode == "zip":
             archive = output_dir.with_suffix(".tar.gz")

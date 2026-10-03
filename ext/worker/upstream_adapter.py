@@ -1,5 +1,6 @@
 """Thin adapter around the original ParseHub caches and ``ParsePipeline``."""
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Any, cast
 
 from core import bs
 from ext.cache import CacheEntry, persistent_cache
+from ext.douyin_quality import QUALITY_POLICY
 from services import ParsePipeline, ParseService, PipelineResult
 from services.cache import parse_cache
 
@@ -82,11 +84,26 @@ class OriginalPipelineAdapter:
             raise OriginalPipelineError("prepare", RuntimeError("download_dir_mismatch"))
         try:
             raw_url = await self.service.get_raw_url(url)
-            if output_mode == "preview" and mode != "read_only" and not refresh and use_persistent_cache:
+            platform = self.service.parser.get_platform(raw_url)
+            douyin = platform is not None and platform.id == "douyin"
+            # Telegram file-id caches do not retain selection evidence or a file to verify.
+            if douyin and use_persistent_cache:
+                logging.getLogger("parsehub.quality").info(
+                    "event=quality.cache platform=douyin source=telegram_cache action=bypass reason=no_quality_evidence"
+                )
+            if output_mode == "preview" and mode != "read_only" and not refresh and use_persistent_cache and not douyin:
                 if cached := await persistent_cache.get(raw_url):
                     return UpstreamOutput(raw_url=raw_url, cached=cached)
 
             parsed = None if refresh else await parse_cache.get(raw_url)
+            if douyin and parsed is not None:
+                quality = getattr(parsed, "_douyin_quality", {})
+                if quality.get("policy") != QUALITY_POLICY or not quality.get("highest_confirmed"):
+                    parsed = None
+                else:
+                    logging.getLogger("parsehub.quality").info(
+                        "event=quality.cache platform=douyin source=parse_cache action=reuse_selection reprobed=false"
+                    )
             if mode == "read_only":
                 parsed = parsed or await self.service.parse(url)
                 await parse_cache.set(raw_url, parsed)

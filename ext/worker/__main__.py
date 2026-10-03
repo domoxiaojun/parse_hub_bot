@@ -40,6 +40,12 @@ async def main() -> None:
     from services.parser import ParseService
 
     configure_logging(settings.worker_log_level)
+    from ext.douyin_quality import QUALITY_POLICY
+
+    logging.getLogger("parsehub.worker").info(
+        "event=quality.ready platform=douyin policy=%s hooks=%s entrypoint=ext.worker",
+        QUALITY_POLICY, ",".join(sorted(hooks.installed())),
+    )
     if Path(settings.download_dir).resolve() != pipeline_download_dir():
         raise RuntimeError("Worker DOWNLOAD_DIR must equal the bot DOWNLOAD_DIR used by ParsePipeline")
 

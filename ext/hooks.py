@@ -45,23 +45,38 @@ def install_douyin_quality() -> None:
     """Wrap ``ParseService.parse`` so Douyin results get the explicit best-quality play URL."""
     if "douyin" in _installed:
         return
+    from parsehub.parsers.parser.douyin import DouyinParseResult
+    from parsehub.provider_api.douyin import DouyinMobileCrawler, DouyinWebCrawler
+
     from core import pl_cfg
     from ext import douyin_quality
-    from log import logger
     from services.parser import ParseService
 
     original = getattr(ParseService, "parse", None)
     if original is None:
         raise HookTargetMissing("services.parser.ParseService.parse")
 
+    for crawler, source in ((DouyinWebCrawler, "web"), (DouyinMobileCrawler, "mobile")):
+        target = getattr(crawler, "parse", None)
+        if not callable(target):
+            raise HookTargetMissing(f"{crawler.__name__}.parse")
+        crawler.parse = douyin_quality.crawler_observer(target, source)
+    download = getattr(DouyinParseResult, "_do_download", None)
+    if not callable(download):
+        raise HookTargetMissing("DouyinParseResult._do_download")
+    DouyinParseResult._do_download = douyin_quality.download_verifier(download)
+
     async def parse(self: ParseService, url: str) -> Any:
-        result = await original(self, url)
         platform = self.parser.get_platform(url)
-        if platform is not None and platform.id == "douyin":
-            ratio = await douyin_quality.upgrade_douyin_video(result, url, pl_cfg.roll_parser_proxy(platform.id))
-            if ratio:
-                logger.bind(name="ParseService").info(f"抖音显式质量探测完成: ratio={ratio}")
-        return result
+        if platform is None or platform.id != "douyin":
+            return await original(self, url)
+        token = douyin_quality.begin_quality(url)
+        try:
+            result = await original(self, url)
+            await douyin_quality.upgrade_douyin_video(result, url, pl_cfg.roll_parser_proxy(platform.id))
+            return result
+        finally:
+            douyin_quality.end_quality(token)
 
     ParseService.parse = parse  # type: ignore[method-assign]
     _installed.add("douyin")

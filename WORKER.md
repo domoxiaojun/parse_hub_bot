@@ -19,7 +19,7 @@ uv run pytest            # test/ext/test_upstream_hooks.py 会校验上游目录
 git push origin worker
 ```
 
-ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音显式质量探测由 `ext/douyin_quality.py`（经 `ext/hooks.py` 挂到 `ParseService.parse`）对公共 ParseHub 2.2.x 结果提供兜底。YouTube 解析由 `ext/youtube_quality.py`（挂到 `YtbParse.cli_args`）指定 yt-dlp `player_client=mweb`，避免 Premium 会话被 SABR-only 限制在 360p；运行主机需有 yt-dlp 支持的 JS 运行时（镜像内为 Deno）。
+ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音视频经 `ext/douyin_quality.py` 与 `ext/hooks.py` 汇总接口候选、实测选流并核验下载文件。YouTube 解析由 `ext/youtube_quality.py`（挂到 `YtbParse.cli_args`）指定 yt-dlp `player_client=mweb`，避免 Premium 会话被 SABR-only 限制在 360p；运行主机需有 yt-dlp 支持的 JS 运行时（镜像内为 Deno）。
 
 Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
 `ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件；抖音视频结果额外经过本地显式质量兜底。Worker只负责HTTP/幂等/租约、
@@ -27,11 +27,40 @@ Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。
 直出解析轮不调用LLM，未携带delivery的旧工具请求仍使用文件交接。
 
 生产解析先按原版`handle_parse()`顺序调用`ParseService.get_raw_url()`，再检查原`persistent_cache`（仅直出）
-和`parse_cache`，未命中时运行原`ParsePipeline`。`refresh=true`同时绕过两级原缓存。Worker不再调用
+和`parse_cache`，未命中时运行原`ParsePipeline`。抖音绕过不含质量证据的 Telegram 文件缓存，并拒用旧策略或未确认最高规格的解析缓存。`refresh=true`同时绕过两级原缓存。Worker不再调用
 `ParseResult.download()`、不另加下载重试、也不调用自己的媒体转换器。Worker定制从原版结果适配、
 消息组装和gptbot HTTP协议开始。源结果严格保留
 ParseHub的`video/image/multimedia/richtext`类型；普通正文标记为plain，只有`markdown_content`标记为
 markdown。ParseHub没有作者、发布时间或公开性证明字段，Worker不会臆造这些元数据。
+
+## 抖音画质选择与容器日志
+
+适用于抖音单视频。选择范围是当前请求发现的播放候选，不代表源站未开放的原始文件。
+
+1. 保留本次网页/手机接口返回的播放地址和 `bit_rate` 候选，补充 `1080p/1440p/2160p/720p/540p/480p/default` 显式请求。
+2. 使用同一解析代理读取候选 MP4 的有限头尾数据，每个候选最多 4 MiB、并发 3 个、单候选总超时 40 秒；通过 ffprobe 读取真实视频流参数。不能解析的候选记录失败原因，不猜测宽高。
+3. 按实测像素面积、帧率、视频码率依次排序；`default` 也参与实测比较，不根据 ratio 标签或文件大小决定清晰度。不同编码的码率不能直接等同于主观画质，日志同时记录编码。
+4. 下载后再用 ffprobe 核对尺寸、编码、帧率、码率和文件大小。与选中候选不一致时记录 `mismatch` 并报错；验证失败时记录 `unverified`。发送前对变更过的输出文件再次检查，原样输出复用已有测量。
+
+日志使用 INFO/WARNING 输出到 Worker 标准日志，容器日志可直接看到，搜索 `event=quality.` 即可。以下为字段示例，数值仅用于说明：
+
+```text
+event=quality.ready platform=douyin policy=measured-resolution-fps-bitrate-v1 hooks=... entrypoint=ext.worker
+event=quality.api platform=douyin trace=... video_id=... source=web status=failed http_status=403 cookie_valid=unknown
+event=quality.candidate platform=douyin trace=... video_id=... requested=1080p status=verified width=1280 height=720 fps=30.0 codec=h264 bitrate=2000000 bytes=... at_least_1080p=False
+event=quality.selected platform=douyin trace=... video_id=... highest_confirmed=False scope=discovered_candidates width=1920 height=1080 requested=stream_3 reason=max_measured_resolution_fps_bitrate
+event=quality.verified platform=douyin trace=... video_id=... stage=download width=1920 height=1080 status=match highest_confirmed=False at_least_1080p=True
+event=quality.final platform=douyin trace=... video_id=... width=1920 height=1080 codec=h264 status=match at_least_1080p=True highest_confirmed=False scope=discovered_candidates measurement=download
+```
+
+- `quality.ready`：新启动的 Worker 已加载画质扩展。实际入口应为 `ext.worker`；更新镜像源码后需要重新构建并重建容器，仅重启旧镜像不会应用代码。
+- `quality.api`：区分网页/手机接口成功或失败。403 只记录 HTTP 状态，Cookie 有效性仍为 `unknown`，不擅自断定过期。
+- `quality.candidate`：请求档位和真实尺寸分开显示。`requested=1080p`、`height=720` 表示服务端返回的仍是 720P。
+- `quality.selected`：记录候选数量、已验证数量、选择策略及选中的参数。任何接口失败、候选探测失败或排序参数缺失，都会使 `highest_confirmed=False`；原始流无法探测时仍选择已验证候选中的最高规格，记录 `original_verified=False`。仅当没有任何候选通过验证时保留原流，并明确标记未验证。
+- `quality.verified` / `quality.final`：下载文件和最终输出的证据。`at_least_1080p=True` 只表示短边至少 1080 像素；判断最高还需看 `highest_confirmed` 和 `scope`。`highest_confirmed=True` 仅在本次所有发现的候选均完整验证且文件核验一致时成立。
+- `quality.cache`：Worker 缓存命中记录 `reprobed=false`，只沿用上次测量，不表示重新查询过源站。未确认最高规格的结果不作为可复用的 Worker 缓存。策略升级已更新缓存键；重新验收使用新的请求标识并设置 `refresh=true`。
+
+新增质量日志不打印 Cookie、完整 CDN 地址或上游异常原文。图集、实况照片和其他平台不受本次选流策略影响。
 
 ## 原配置与路径
 
