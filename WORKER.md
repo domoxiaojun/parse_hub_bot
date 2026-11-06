@@ -26,6 +26,10 @@ Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。
 把原版输出适配为投递信封，以及preview Rich Message、raw/zip原文件的Telegram发送。gptbot继续作为唯一update接收方；
 直出解析轮不调用LLM，未携带delivery的旧工具请求仍使用文件交接。
 
+gptbot 将已确认来源和回复目标的消息持久化到 `telegram.social-link`，由其 tool worker 池异步执行，主聊天 worker 不等待解析。Worker 的 HTTP 协议保持 v3：同一 job 的最多 10 个去重链接并发准备，与其他消息共用全局 `Semaphore(2)`。每个结果完成时立即保存租约及检查点，最终按输入顺序组织交付；不同消息可以先完成先回复各自原消息。
+
+单链接失败不取消其他链接。取消整条任务会等待所有子任务退出后释放租约；相同来源共享的解析仅在最后一个等待者离开后取消。gptbot 重启后查询已记录的 job；若提交响应丢失，只允许原请求体和原幂等键重试。Worker 自身重启仍沿用现有中断/未知交付恢复规则，不盲目重发。
+
 生产解析先按原版`handle_parse()`顺序调用`ParseService.get_raw_url()`，再检查原`persistent_cache`（仅直出）
 和`parse_cache`，未命中时运行原`ParsePipeline`。抖音绕过不含质量证据的 Telegram 文件缓存，并拒用旧策略或未确认最高规格的解析缓存。`refresh=true`同时绕过两级原缓存。Worker不再调用
 `ParseResult.download()`、不另加下载重试、也不调用自己的媒体转换器。Worker定制从原版结果适配、

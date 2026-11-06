@@ -200,34 +200,45 @@ class Jobs:
         job.update(status="running", stage="prepare")
         self.store.save_job(job)
         keeper = asyncio.create_task(self._keep_partial_leases(job))
+        completed: dict[int, dict[str, Any]] = {}
+
+        async def prepare_one(index: int, url: str) -> None:
+            try:
+                result = await self._result(url, request, config, job["id"])
+            except Exception as error:
+                code = getattr(error, "code", None)
+                if code not in {
+                    "unsupported_url",
+                    "upstream_challenge",
+                    "credentials_required",
+                    "credentials_invalid",
+                    "content_unavailable",
+                    "upstream_contract",
+                    "upstream_http",
+                    "upstream_timeout",
+                    "content_restricted",
+                    "media_failed",
+                    "visibility_unknown",
+                    "media_processing_failed",
+                    "upload_failed",
+                    "file_too_large",
+                    "unsupported_mode",
+                }:
+                    code = "prepare_failed"
+                result = {"sourceUrl": url, "error": {"code": code, "message": "解析准备失败"}}
+                logger.warning("event=prepare.failed job=%s code=%s", job["id"], code)
+            # Publish each lease immediately, even when an earlier URL is still
+            # waiting. The keeper and restart recovery can now see all owned files.
+            # No await separates lease acquisition from this checkpoint.
+            completed[index] = result
+            job["results"] = [completed[i] for i in sorted(completed)]
+            self.store.save_job(job)
+
+        preparations = [asyncio.create_task(prepare_one(i, url)) for i, url in enumerate(urls)]
         try:
-            for url in urls:
-                try:
-                    result = await self._result(url, request, config, job["id"])
-                    job["results"].append(result)
-                except Exception as error:
-                    code = getattr(error, "code", None)
-                    if code not in {
-                        "unsupported_url",
-                        "upstream_challenge",
-                        "credentials_required",
-                        "credentials_invalid",
-                        "content_unavailable",
-                        "upstream_contract",
-                        "upstream_http",
-                        "upstream_timeout",
-                        "content_restricted",
-                        "media_failed",
-                        "visibility_unknown",
-                        "media_processing_failed",
-                        "upload_failed",
-                        "file_too_large",
-                        "unsupported_mode",
-                    }:
-                        code = "prepare_failed"
-                    job["results"].append({"sourceUrl": url, "error": {"code": code, "message": "解析准备失败"}})
-                    logger.warning("event=prepare.failed job=%s code=%s", job["id"], code)
-                self.store.save_job(job)
+            # _prepare owns the global capacity semaphore, shared across jobs and
+            # links. Individual failures are data; cancellation stops all waiters.
+            await asyncio.gather(*preparations)
             if request.delivery is not None:
                 job.update(stage="delivery")
                 self.store.save_job(job)
@@ -251,10 +262,6 @@ class Jobs:
             job.update(status="cancelled", stage="cancelled")
             if request.delivery is not None and job["delivery"]["status"] in {"pending", "sending"}:
                 job["delivery"]["status"] = "unknown" if job["delivery"].get("inFlight") else "cancelled"
-            if request.delivery is None:
-                for item in job["results"]:
-                    if item.get("leaseId"):
-                        self.store.release(item["leaseId"])
         except Exception as error:
             logger.warning(
                 "event=job.failed job=%s stage=%s error_type=%s", job["id"], job.get("stage"), type(error).__name__
@@ -263,10 +270,14 @@ class Jobs:
             if request.delivery is not None:
                 job["delivery"]["status"] = "unknown" if job["delivery"].get("inFlight") else "failed"
         finally:
+            for preparation in preparations:
+                if not preparation.done():
+                    preparation.cancel()
+            await asyncio.gather(*preparations, return_exceptions=True)
             keeper.cancel()
             await asyncio.gather(keeper, return_exceptions=True)
             self.store.save_job(job)
-            if request.delivery is not None:
+            if request.delivery is not None or job["status"] in {"failed", "cancelled"}:
                 # Commit terminal receipt first. Cached files stay under the fixed TTL.
                 for item in job["results"]:
                     if item.get("leaseId"):

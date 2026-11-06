@@ -36,13 +36,14 @@ class FakeEngine:
 
     async def prepare(self, url: str, **kwargs: Any) -> dict[str, Any]:
         self.calls += 1
+        call_id = self.calls
         self.started.set()
         try:
             await self.gate.wait()
         except asyncio.CancelledError:
             self.cancelled = True
             raise
-        directory = kwargs["directory"] / f"Title_{self.calls}"
+        directory = kwargs["directory"] / f"Title_{call_id}"
         directory.mkdir()
         kwargs["register_directory"](directory)
         path = directory / "video.mp4"
