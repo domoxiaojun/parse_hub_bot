@@ -23,6 +23,7 @@ class WorkerSettings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///data/db/database.db"
     bot_proxy: str | None = None
     worker_cache_max_bytes: int = Field(default=10 * 1024**3, ge=1)
+    worker_download_concurrency: int = Field(default=2, ge=1, le=8)
 
     @property
     def sessions_path(self) -> Path:

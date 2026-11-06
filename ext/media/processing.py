@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pillow_heif
-from parsehub.types import DownloadResult, LivePhotoFile
+from parsehub.types import DownloadResult, LivePhotoFile, MusicFile
 from parsehub.utils.media_info import MediaInfoReader
 from PIL import Image, ImageOps
 from PIL.Image import Resampling
@@ -293,6 +293,10 @@ async def process_media_files(download_result: DownloadResult) -> list[Processed
     logger.debug(f"开始媒体处理: 文件数={len(media_files)}, output_dir={processed_dir}")
     processed_list: list[ProcessedMedia] = []
     for media_file in media_files:
+        if isinstance(media_file, MusicFile):
+            # ParseHub music carries its own duration and needs no image/video conversion.
+            processed_list.append(PreparedMedia(media_file))
+            continue
         logger.debug(f"处理文件: {media_file.path}")
         try:
             result = (

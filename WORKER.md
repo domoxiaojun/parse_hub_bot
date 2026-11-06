@@ -21,6 +21,16 @@ git push origin worker
 
 ParseHub 解析库通过依赖锁文件管理；库发布新版本时使用 `uv lock --upgrade-package parsehub`，检查锁文件变化并验证后提交。本 Worker 不依赖 VPS 上的相邻 `../ParseHub` 源码；抖音视频经 `ext/douyin_quality.py` 与 `ext/hooks.py` 汇总接口候选、实测选流并核验下载文件。YouTube 解析由 `ext/youtube_quality.py`（挂到 `YtbParse.cli_args`）指定 yt-dlp `player_client=mweb`，避免 Premium 会话被 SABR-only 限制在 360p；运行主机需有 yt-dlp 支持的 JS 运行时（镜像内为 Deno）。
 
+当前选流偏好：小红书跨编码组选择最高分辨率，有 4K 时优先 4K，分辨率相同时再比较帧率和码率；X 普通推文、动图和文章视频选择最高码率 MP4，兼容 `bitrate` 与 `bit_rate`，不依赖接口返回顺序；YouTube 的解析和下载统一使用 `res:1080,fps,+codec:h264,br` 强制排序，优先 1080p，取消约 500MB 的体积偏好。YouTube 缺少 1080p 时选择最高的较低分辨率；若仅有更高分辨率，则选择最小的可用更高版本。解析阶段保留 mweb 客户端设置，其他平台的 yt-dlp 排序不变。
+
+这些偏好作用于平台本次返回的可访问候选；没有 4K 时不会生成或伪称 4K。`raw` / `zip` 跳过媒体预处理，保留选中的下载文件；实况预览仍遵循现有 Telegram 兼容处理。
+
+Instagram 保留图片/视频候选、媒体 ID 和内联 DASH：图片按分辨率选源，视频优先分辨率和帧率；轮播按媒体 ID 恢复缺失视频，恢复失败明确报错，不用封面替代。单视频 yt-dlp 解析及所有视频下载使用可选的 Instagram 登录 Cookie 和各自配置的代理；Cookie 通过限域临时文件传递，不作为 CDN 全局请求头。每项下载最多尝试 8 个已知候选，失败后有界回退，下载并发遵循 Worker 配置。
+
+Instagram 下载后用 Pillow/ffprobe 读取实际参数；已知分辨率或帧率不匹配时尝试下一个候选。`event=instagram.quality` 记录实际尺寸、回退和降级；`highest_confirmed` 保持 false，因为未实测平台全部候选。`zip` 中的 `metadata.json` 会同步实际文件信息和 `download_quality`，不会修改其他请求共享的解析对象。`raw` / `zip` 仍保留下载字节；媒体缓存命中不代表重新验证，复查源站使用 `refresh=true`。
+
+当前依赖范围为 ParseHub `>=2.4.0,<2.5`，锁定 2.4.0。新增 Bangumi、Medium、今日头条、微信视频号及最右新短链识别；B站音乐以音频投递，`raw` 模式仍返回原文件。微信视频号需在平台配置 `weixin_channels` 中填写腾讯元宝登录 Cookie。Twitter 配置 Cookie 后按上游行为直接使用 Cookie，不再回退匿名。
+
 Worker是原版ParseHub与gptbot之间的薄适配器，不监听用户消息。URL归一化、原持久缓存、解析缓存、
 `ParseService`、`ParsePipeline`、下载重试和媒体处理全部复用原版组件；抖音视频结果额外经过本地显式质量兜底。Worker只负责HTTP/幂等/租约、
 把原版输出适配为投递信封，以及preview Rich Message、raw/zip原文件的Telegram发送。gptbot继续作为唯一update接收方；
@@ -65,6 +75,10 @@ event=quality.final platform=douyin trace=... video_id=... width=1920 height=108
 - `quality.cache`：Worker 缓存命中记录 `reprobed=false`，只沿用上次测量，不表示重新查询过源站。未确认最高规格的结果不作为可复用的 Worker 缓存。策略升级已更新缓存键；重新验收使用新的请求标识并设置 `refresh=true`。
 
 新增质量日志不打印 Cookie、完整 CDN 地址或上游异常原文。图集、实况照片和其他平台不受本次选流策略影响。
+
+ParseHub 2.4 的每项多文件下载并发通过 `WORKER_DOWNLOAD_CONCURRENCY` 配置，默认 2，允许 1–8；单文件连接数仍由 ParseHub 决定。该上限作用于当前 Worker 流水线，不影响交互 Bot；默认最多 2 项同时准备，每项最多 2 个文件下载。任务取消会等待子下载退出并清理本次未完成目录。
+
+已接入上游“作品不可用”异常：立即停止解析重试并返回 `content_unavailable`；其他解析错误仍最多尝试 3 次。抖音切换画质时只保留选中流对应的 CDN 备用地址。媒体缓存版本 7 避免复用旧平台选流结果，抖音选流策略仍为 v2。
 
 ## 原配置与路径
 

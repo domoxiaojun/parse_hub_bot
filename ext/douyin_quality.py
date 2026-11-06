@@ -24,7 +24,7 @@ PLAY_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 MOBILE_PLAY_RATIOS = ("1080p", "1440p", "2160p", "720p", "540p", "480p", "default")
-QUALITY_POLICY = "measured-resolution-fps-bitrate-v1"
+QUALITY_POLICY = "measured-resolution-fps-bitrate-v2"
 logger = logging.getLogger("parsehub.quality")
 _attempt: ContextVar[dict[str, Any] | None] = ContextVar("douyin_quality_attempt", default=None)
 
@@ -98,7 +98,9 @@ def _pick_video_uri(video: dict[str, Any]) -> str:
 
 
 def _candidates(media: VideoRef, payloads: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = [{"ratio": "original", "source": "parser", "direct_url": media.url}]
+    candidates: list[dict[str, Any]] = [{
+        "ratio": "original", "source": "parser", "direct_url": media.url, "backup_urls": list(media.backup_urls),
+    }]
     uris: set[str] = set()
     for source, payload in payloads:
         video = (payload.get("aweme_detail") or {}).get("video") or {}
@@ -107,10 +109,11 @@ def _candidates(media: VideoRef, payloads: list[tuple[str, dict[str, Any]]]) -> 
         addresses = [video.get(key) or {} for key in ("play_addr", "play_addr_h264", "play_addr_265")]
         addresses.extend(item.get("play_addr") or {} for item in video.get("bit_rate") or [])
         for index, address in enumerate(addresses):
-            for url in address.get("url_list") or []:
-                if isinstance(url, str) and url.startswith(("http://", "https://")):
-                    candidates.append({"ratio": f"stream_{index}", "source": source,
-                                       "direct_url": url.replace("playwm", "play")})
+            urls = [url.replace("playwm", "play") for url in address.get("url_list") or []
+                    if isinstance(url, str) and url.startswith(("http://", "https://"))]
+            for url in urls:
+                candidates.append({"ratio": f"stream_{index}", "source": source,
+                                   "direct_url": url, "backup_urls": urls})
     for uri in sorted(uris):
         for ratio in MOBILE_PLAY_RATIOS:
             query = urlencode({"video_id": uri, "ratio": ratio, "line": 0})
@@ -195,6 +198,9 @@ async def upgrade_douyin_video(result: AnyParseResult, raw_url: str, proxy: str 
     original = next((item for item in candidates if item["ratio"] == "original"), None)
     report["original_verified"] = bool(original and original.get("verified"))
     media.url = best["direct_url"]
+    # Only the selected API rendition's CDN group is interchangeable. Keeping
+    # the old rendition's backups after upgrading can silently download lower quality.
+    media.backup_urls = list(dict.fromkeys(url for url in best.get("backup_urls", []) if url != media.url))
     media.width, media.height = best["width"], best["height"]
     report.update({key: best[key] for key in ("width", "height", "fps", "bitrate", "codec", "content_length")})
     report["requested"] = best["ratio"]

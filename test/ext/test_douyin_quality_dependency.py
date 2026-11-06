@@ -52,6 +52,45 @@ def test_collects_api_bitrates_original_and_all_explicit_ratios():
     assert any(c["direct_url"].endswith("/high.mp4") for c in candidates)
 
 
+@pytest.mark.parametrize("selected", ["api", "explicit", "original"])
+def test_selected_rendition_owns_its_backup_urls(selected):
+    async def run():
+        token = quality.begin_quality("https://www.douyin.com/video/123")
+        try:
+            payload = detail()
+            payload["aweme_detail"]["video"]["bit_rate"][0]["play_addr"]["url_list"].append(
+                "https://backup.example/high.mp4"
+            )
+            quality._attempt.get()["payloads"].append(("web", payload))
+            result = SimpleNamespace(raw_url="https://www.douyin.com/video/123", media=VideoRef(
+                url="https://cdn.example/original.mp4", backup_urls=["https://backup.example/low.mp4"],
+            ))
+
+            async def probe(candidates, _proxy):
+                for candidate in candidates:
+                    chosen = (
+                        candidate["direct_url"].endswith("/high.mp4") if selected == "api"
+                        else candidate["ratio"] == "1080p" if selected == "explicit"
+                        else candidate["ratio"] == "original"
+                    )
+                    candidate.update(measured(
+                        1920 if chosen else 960, 1080 if chosen else 540,
+                        ratio=candidate["ratio"], direct_url=candidate["direct_url"],
+                    ))
+
+            with patch.object(quality, "_probe_candidates", new=probe):
+                await quality.upgrade_douyin_video(result, result.raw_url, None)
+            expected = {
+                "api": ["https://backup.example/high.mp4"], "explicit": [],
+                "original": ["https://backup.example/low.mp4"],
+            }
+            assert result.media.backup_urls == expected[selected]
+        finally:
+            quality.end_quality(token)
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("original_fails,other_fails,api_failed", [
     (False, False, False), (True, False, False), (False, True, False), (False, False, True),
 ])

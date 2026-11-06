@@ -9,6 +9,7 @@ from typing import Any, cast
 from core import bs
 from ext.cache import CacheEntry, persistent_cache
 from ext.douyin_quality import QUALITY_POLICY
+from ext.parsehub_compat import DEFAULT_DOWNLOAD_CONCURRENCY, download_limit
 from services import ParsePipeline, ParseService, PipelineResult
 from services.cache import parse_cache
 
@@ -65,8 +66,9 @@ def pipeline_download_dir() -> Path:
 class OriginalPipelineAdapter:
     """Run the same resolution, caches and pipeline used by plugins.parse.handlers."""
 
-    def __init__(self, service: ParseService):
+    def __init__(self, service: ParseService, *, download_concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY):
         self.service = service
+        self.download_concurrency = download_concurrency
 
     async def prepare(
         self,
@@ -126,7 +128,8 @@ class OriginalPipelineAdapter:
             t=cast(Any, lambda value: value),
         )
         try:
-            result = await pipeline.run()
+            with download_limit(self.download_concurrency):
+                result = await pipeline.run()
         except Exception as error:
             raise OriginalPipelineError(reporter.error_stage, error) from error
         finally:

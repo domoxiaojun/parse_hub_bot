@@ -12,14 +12,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from parsehub.errors import DownloadError, ParseError, UnknownPlatform
-from parsehub.types import AniFile, ImageFile, LivePhotoFile, VideoFile
+from parsehub.errors import (
+    ContentUnavailableError,
+    DownloadError,
+    DownloadFallbackError,
+    FallbackError,
+    ParseError,
+    UnknownPlatform,
+)
+from parsehub.parsers.base.base import BaseParser
+from parsehub.types import AniFile, ImageFile, LivePhotoFile, MusicFile, VideoFile
 from parsehub.utils.helpers import match_url
 
 from ext.delivery.assets import worker_cached_media
 from ext.delivery.models import asset_key
 from ext.douyin_quality import audit_processed_video
 from ext.media.processing import motion_of, resolve_live_photo_video_info
+from ext.parsehub_compat import DEFAULT_DOWNLOAD_CONCURRENCY
+from ext.platform_links import DOMAINS, advertised_patterns
 from ext.worker.security import EngineError, validate_url
 from ext.worker.upstream_adapter import OriginalPipelineAdapter, OriginalPipelineError, UpstreamOutput
 from services import ParseService, PipelineResult
@@ -40,11 +50,13 @@ class _UpstreamFailure:
 class ParseHubEngine:
     """Keep Worker concerns outside the original parse/download/process pipeline."""
 
-    def __init__(self, root: Path, service: ParseService):
+    def __init__(
+        self, root: Path, service: ParseService, *, download_concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
+    ) -> None:
         self.root = root.resolve()
         self.service = service
         self.parser = service.parser
-        self.upstream = OriginalPipelineAdapter(service)
+        self.upstream = OriginalPipelineAdapter(service, download_concurrency=download_concurrency)
         self.config: dict[str, Any] = {}
 
     def configure(self, config: dict[str, Any]) -> None:
@@ -56,7 +68,11 @@ class ParseHubEngine:
         return {
             "version": importlib.metadata.version("parsehub"),
             "platforms": [
-                {"id": p["id"], "name": p["name"], "contentTypes": p["supported_types"]}
+                {"id": p["id"], "name": p["name"], "contentTypes": p["supported_types"],
+                 "domains": list(DOMAINS.get(p["id"], ())),
+                 "urlPatterns": advertised_patterns(p["id"], next(
+                     (c.__match__ or "" for c in BaseParser.get_registry()
+                      if c.__platform__ is not None and c.__platform__.id == p["id"]), ""))}
                 for p in self.parser.get_platforms()
             ],
             "outputModes": ["preview", "raw", "zip"],
@@ -279,10 +295,14 @@ class ParseHubEngine:
 
     def _adapt_preview(self, result: dict[str, Any], pipeline: PipelineResult) -> None:
         for processed in pipeline.processed_list:
+            start = len(result["media"])
             source = processed.source
             paths = [Path(path) for path in processed.output_paths or [source.path]]
             if isinstance(source, LivePhotoFile):
                 self._adapt_live_photo(result, processed, paths)
+                for entry in result["media"][start:]:
+                    if original := getattr(source, "_reader_original_url", None):
+                        entry["originalUrl"] = original
                 continue
             kind = (
                 "photo"
@@ -291,6 +311,8 @@ class ParseHubEngine:
                 if isinstance(source, AniFile)
                 else "video"
                 if isinstance(source, VideoFile)
+                else "audio"
+                if isinstance(source, MusicFile)
                 else "document"
             )
             for path in paths:
@@ -305,6 +327,10 @@ class ParseHubEngine:
                         duration=duration,
                     )
                 )
+
+            for entry in result["media"][start:]:
+                if original := getattr(source, "_reader_original_url", None):
+                    entry["originalUrl"] = original
 
     def _adapt_live_photo(
         self,
@@ -387,6 +413,7 @@ class ParseHubEngine:
                 "photo": "image/jpeg",
                 "video": "video/mp4",
                 "animation": "image/gif",
+                "audio": "audio/mp4",
                 "document": "application/octet-stream",
             }[kind]
         )
@@ -409,6 +436,8 @@ class ParseHubEngine:
 
     @staticmethod
     def _media_info(processed: ProcessedMedia, path: Path) -> tuple[int, int, int]:
+        if isinstance(processed.source, MusicFile):
+            return 0, 0, processed.source.duration
         try:
             return resolve_media_info(processed, str(path))
         except Exception:
@@ -427,7 +456,7 @@ class ParseHubEngine:
     def _failure_code(failure: _UpstreamFailure, credential_used: bool) -> str:
         if failure.reason == "login_required":
             return "credentials_invalid" if credential_used else "credentials_required"
-        if failure.reason in {"content_not_found", "content_missing", "response_data_missing"}:
+        if failure.reason in {"content_unavailable", "content_not_found", "content_missing", "response_data_missing"}:
             return "content_unavailable"
         if failure.reason == "timeout":
             return "upstream_timeout"
@@ -445,23 +474,33 @@ class ParseHubEngine:
         while cause is not None and id(cause) not in seen:
             seen.add(id(cause))
             chain.append(cause)
-            cause = cause.__cause__ or cause.__context__
+            # A fallback's final attempt determines its outcome. Older failed
+            # stages can have unrelated auth/HTTP errors and must not override it.
+            if isinstance(cause, (FallbackError, DownloadFallbackError)) and cause.attempts:
+                cause = cause.attempts[-1].error
+            else:
+                cause = cause.__cause__ or cause.__context__
         return chain
 
     @staticmethod
     def _failure_reason(chain: list[BaseException], status: int | None) -> str:
-        # Prefer stable upstream exception types; message matching is only a fallback
-        # because ParseHub currently does not expose structured reason codes.
-        if status is not None:
-            return "http_error"
+        if any(isinstance(item, ContentUnavailableError) for item in chain):
+            return "content_unavailable"
         if any(isinstance(item, UnknownPlatform) for item in chain):
             return "unsupported_url"
+        if any(isinstance(item, TimeoutError) or "Timeout" in type(item).__name__ for item in chain):
+            return "timeout"
         if any(isinstance(item, DownloadError) for item in chain):
             return "download_error"
+        if status is not None:
+            return "http_error"
         parse_rejected = any(isinstance(item, ParseError) for item in chain)
-        messages = [str(item) for item in chain]
+        messages = [str(item) for item in chain if not isinstance(item, (FallbackError, DownloadFallbackError))]
         patterns = (
-            ("login_required", lambda message: "需要登录" in message or "login required" in message.lower()),
+            ("login_required", lambda message: any(
+                token in message.lower() for token in (
+                    "需要登录", "已登录的 cookie", "login required", "登录 cookie", "cookie 无效或已过期",
+                ))),
             ("content_not_found", lambda message: "不存在" in message or "not found" in message.lower()),
             ("response_data_missing", lambda message: "No data found" in message),
             ("content_missing", lambda message: "未获取到内容" in message),
@@ -469,8 +508,6 @@ class ParseHubEngine:
         for reason, matches in patterns:
             if any(matches(message) for message in messages):
                 return reason
-        if any(isinstance(item, TimeoutError) or "Timeout" in type(item).__name__ for item in chain):
-            return "timeout"
         if any(isinstance(item, (KeyError, TypeError, ValueError)) for item in chain):
             return "response_contract"
         return "parse_rejected" if parse_rejected else "unclassified"
@@ -486,6 +523,8 @@ class ParseHubEngine:
         status = None
         for cause in chain:
             candidate = getattr(getattr(cause, "response", None), "status_code", None)
+            if candidate is None:
+                candidate = getattr(cause, "status_code", None)
             if isinstance(candidate, int) and 100 <= candidate <= 599:
                 status = candidate
                 break

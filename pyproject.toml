@@ -15,7 +15,7 @@ dependencies = [
     "loguru>=0.6.0",
     "lxml-html-clean>=0.4.1",
     "markdown>=3.7",
-    "parsehub>=2.2.4,<2.3",
+    "parsehub>=2.4.0,<2.5",
     "pillow>=12.1.1",
     "pillow-heif>=1.1.1",
     "pydantic>=2.12.5",
@@ -27,6 +27,8 @@ dependencies = [
     "tgcrypto>=1.2.5",
     "uvloop>=0.22.1 ; sys_platform != 'win32'",
     "winloop>=0.3.1 ; sys_platform == 'win32'",
+    # Declare ParseHub's required nightly explicitly so uv permits this prerelease dependency.
+    "yt-dlp[default]>=2026.10.26.220202.dev0",
 ]
 
 [tool.ruff]

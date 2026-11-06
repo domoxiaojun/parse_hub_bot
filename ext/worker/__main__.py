@@ -70,7 +70,9 @@ async def main() -> None:
         )
         expected_id = settings.bot_token.get_secret_value().split(":", 1)[0]
         parse_service = ParseService()
-        engine = ParseHubEngine(store.files, parse_service)
+        engine = ParseHubEngine(
+            store.files, parse_service, download_concurrency=settings.worker_download_concurrency,
+        )
         capabilities = engine.capabilities()
         logging.getLogger("parsehub.worker").info("event=parser.ready parsehub_version=%s", capabilities["version"])
         client = create_sender_client(settings)

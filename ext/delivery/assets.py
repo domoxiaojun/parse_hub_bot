@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
-from parsehub.types import AniFile, ImageFile, LivePhotoFile, VideoFile
+from parsehub.types import AniFile, ImageFile, LivePhotoFile, MusicFile, VideoFile
 
 from ext.cache import CacheMedia, CacheMediaType
 from ext.delivery.models import AssetKind, DeliveryError, MediaAsset, asset_key
@@ -63,10 +63,15 @@ def pipeline_assets(
             if isinstance(source, AniFile)
             else "video"
             if isinstance(source, VideoFile)
+            else "audio"
+            if isinstance(source, MusicFile)
             else "document"
         )
         for path in paths:
-            width, height, duration = (0, 0, 0) if raw else resolve_media_info(processed, str(path))
+            width, height, duration = (
+                (0, 0, 0) if raw else (0, 0, source.duration)
+                if isinstance(source, MusicFile) else resolve_media_info(processed, str(path))
+            )
             assets.append(
                 MediaAsset(
                     asset_key(source_id, len(assets), [path]),
@@ -133,6 +138,8 @@ def cache_assets(assets: tuple[MediaAsset, ...], uploaded: list[dict[str, Any]])
 
 def worker_cached_media(media: CacheMedia) -> dict[str, Any]:
     result: dict[str, Any] = {"type": media.type.value, "telegramFileId": media.file_id}
+    if media.type == CacheMediaType.AUDIO:
+        result["durationSeconds"] = media.duration
     if media.cover_file_id:
         result["telegramCoverFileId"] = media.cover_file_id
     if media.type == CacheMediaType.LIVE_PHOTO:
